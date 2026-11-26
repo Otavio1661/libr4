@@ -1,0 +1,302 @@
+/**
+ * ============================================
+ * libr4 / codec.js  —  R4 dev
+ * ============================================
+ * R4.codec: codificadores/decodificadores de áudio escritos à mão, sem bibliotecas.
+ * Áudio = { sampleRate, channels: [Float32Array, ...] } (amostras de -1 a 1).
+ * WAV (PCM 8/16/24/32 e float 32, ler e gravar), AIFF (gravar/ler 16/24), FLAC (gravar, sem perdas),
+ * mixagem/reamostragem/ganho/corte/fade/normalização, CRC-8/16 e escritor de bits.
+ * Arquivos do usuário são dados NÃO confiáveis: toda leitura valida tamanhos e tem limite.
+ * ============================================
+ */
+(function (R4) {
+  'use strict';
+  const fail = m => { throw new Error(m); };
+  const MAX_SAMPLES = 2 ** 28;   // ~ 1,5 h a 48 kHz estéreo; protege a memória
+
+  /* ================= utilidades ================= */
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  const audio = (sampleRate, channels) => ({ sampleRate, channels });
+  const frames = a => (a.channels.length ? a.channels[0].length : 0);
+  const duration = a => (a.sampleRate ? frames(a) / a.sampleRate : 0);
+  const concatBytes = parts => {
+    let n = 0; parts.forEach(p => { n += p.length; });
+    const out = new Uint8Array(n); let o = 0;
+    parts.forEach(p => { out.set(p, o); o += p.length; });
+    return out;
+  };
+  const ascii = (u8, o, n) => { let s = ''; for (let i = 0; i < n; i++) s += String.fromCharCode(u8[o + i]); return s; };
+  const checkAudio = a => {
+    if (!a || !Array.isArray(a.channels) || !a.channels.length || !(a.sampleRate > 0)) fail('Áudio inválido.');
+    const n = a.channels[0].length;
+    if (a.channels.length > 8) fail('Canais demais (máximo 8).');
+    if (n * a.channels.length > MAX_SAMPLES) fail('Áudio longo demais para processar.');
+    a.channels.forEach(c => { if (c.length !== n) fail('Canais com tamanhos diferentes.'); });
+  };
+
+  /* CRC-8 (poly 0x07) e CRC-16 (poly 0x8005) usados pelo FLAC */
+  const CRC16 = new Uint16Array(256), CRC8 = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i << 8, d = i;
+    for (let k = 0; k < 8; k++) { c = (c & 0x8000) ? ((c << 1) ^ 0x8005) : (c << 1); d = (d & 0x80) ? ((d << 1) ^ 0x07) : (d << 1); }
+    CRC16[i] = c & 0xffff; CRC8[i] = d & 0xff;
+  }
+  const crc16 = (u8, a = 0, b = u8.length) => { let c = 0; for (let i = a; i < b; i++) c = ((c << 8) ^ CRC16[((c >> 8) ^ u8[i]) & 255]) & 0xffff; return c; };
+  const crc8 = (u8, a = 0, b = u8.length) => { let c = 0; for (let i = a; i < b; i++) c = CRC8[c ^ u8[i]]; return c; };
+
+  /** Escritor de bits (MSB primeiro). */
+  class BitWriter {
+    constructor(cap) { this.buf = new Uint8Array(cap || 4096); this.n = 0; this.acc = 0; this.bits = 0; }
+    _grow() { const b = new Uint8Array(this.buf.length * 2); b.set(this.buf); this.buf = b; }
+    _byte(v) { if (this.n >= this.buf.length) this._grow(); this.buf[this.n++] = v; }
+    write(v, nb) {   // nb <= 32; v inteiro sem sinal
+      while (nb > 0) {
+        const take = Math.min(nb, 8 - this.bits), shift = nb - take;
+        const part = Math.floor(v / 2 ** shift) & ((1 << take) - 1);
+        this.acc = (this.acc << take) | part; this.bits += take; nb -= take;
+        v -= part * 2 ** shift;
+        if (this.bits === 8) { this._byte(this.acc & 255); this.acc = 0; this.bits = 0; }
+      }
+    }
+    signed(v, nb) { this.write(v < 0 ? v + 2 ** nb : v, nb); }
+    unary(q) { while (q >= 24) { this.write(0, 24); q -= 24; } this.write(1, q + 1); }
+    align() { if (this.bits) this.write(0, 8 - this.bits); }
+    bytes() { this.align(); return this.buf.subarray(0, this.n); }
+  }
+
+  /* ================= PCM ================= */
+  /** Float → inteiro com sinal (arredonda, satura). */
+  const toInt = (x, bits) => { const m = 2 ** (bits - 1); return clamp(Math.round(x * m), -m, m - 1); };
+
+  /* ================= WAV ================= */
+  /** Grava WAV. bits: 8 | 16 | 24 | 32 (inteiro) ou 'f32'. Devolve Uint8Array. */
+  function encodeWAV(a, o) {
+    checkAudio(a); o = o || {};
+    const bits = o.bits === 'f32' || o.bits === 32 && o.float ? 32 : (o.bits || 16), float = o.bits === 'f32' || !!o.float;
+    if (![8, 16, 24, 32].includes(bits)) fail('Profundidade de bits inválida.');
+    const ch = a.channels.length, n = frames(a), bps = bits / 8, dataLen = n * ch * bps;
+    if (dataLen > 0xFFFFFFF0 - 44) fail('Áudio grande demais para WAV.');
+    const out = new Uint8Array(44 + dataLen + (dataLen & 1)), dv = new DataView(out.buffer);
+    const tag = (p, s) => { for (let i = 0; i < 4; i++) out[p + i] = s.charCodeAt(i); };
+    tag(0, 'RIFF'); dv.setUint32(4, out.length - 8, true); tag(8, 'WAVE'); tag(12, 'fmt ');
+    dv.setUint32(16, 16, true); dv.setUint16(20, float ? 3 : 1, true); dv.setUint16(22, ch, true);
+    dv.setUint32(24, a.sampleRate, true); dv.setUint32(28, a.sampleRate * ch * bps, true);
+    dv.setUint16(32, ch * bps, true); dv.setUint16(34, bits, true); tag(36, 'data'); dv.setUint32(40, dataLen, true);
+    let p = 44;
+    for (let i = 0; i < n; i++) for (let c = 0; c < ch; c++) {
+      const x = a.channels[c][i];
+      if (float) { dv.setFloat32(p, x, true); p += 4; }
+      else if (bits === 8) out[p++] = toInt(x, 8) + 128;
+      else if (bits === 16) { dv.setInt16(p, toInt(x, 16), true); p += 2; }
+      else if (bits === 24) { const v = toInt(x, 24); out[p++] = v & 255; out[p++] = (v >> 8) & 255; out[p++] = (v >> 16) & 255; }
+      else { dv.setInt32(p, toInt(x, 32), true); p += 4; }
+    }
+    return out;
+  }
+
+  /** Lê WAV (PCM 8/16/24/32, float 32/64, WAVE_FORMAT_EXTENSIBLE). Devolve áudio + { bits, float }. */
+  function decodeWAV(u8) {
+    if (u8.length < 44 || ascii(u8, 0, 4) !== 'RIFF' || ascii(u8, 8, 4) !== 'WAVE') fail('Não é um arquivo WAV.');
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    let p = 12, fmt = null, data = null;
+    while (p + 8 <= u8.length) {
+      const id = ascii(u8, p, 4); let len = dv.getUint32(p + 4, true); p += 8;
+      if (p + len > u8.length) len = u8.length - p;   // data truncado é tolerado
+      if (id === 'fmt ' && len >= 16) {
+        fmt = { tag: dv.getUint16(p, true), ch: dv.getUint16(p + 2, true), rate: dv.getUint32(p + 4, true), bits: dv.getUint16(p + 14, true) };
+        if (fmt.tag === 0xFFFE && len >= 26) fmt.tag = dv.getUint16(p + 24, true);
+      } else if (id === 'data') { data = [p, len]; break; }
+      p += len + (len & 1);
+    }
+    if (!fmt || !data) fail('WAV sem formato ou sem dados.');
+    const { tag, ch, rate, bits } = fmt;
+    if (!ch || ch > 8 || !rate || rate > 768000) fail('WAV com parâmetros inválidos.');
+    const float = tag === 3;
+    if (!(tag === 1 || float) || ![8, 16, 24, 32, 64].includes(bits) || (float && bits !== 32 && bits !== 64) || (!float && bits === 64)) fail('Formato de WAV não suportado.');
+    const bps = bits / 8, n = Math.floor(data[1] / (bps * ch));
+    if (n * ch > MAX_SAMPLES) fail('Áudio longo demais para processar.');
+    const chans = Array.from({ length: ch }, () => new Float32Array(n));
+    let q = data[0];
+    for (let i = 0; i < n; i++) for (let c = 0; c < ch; c++) {
+      let v;
+      if (float) { v = bits === 32 ? dv.getFloat32(q, true) : dv.getFloat64(q, true); }
+      else if (bits === 8) v = (u8[q] - 128) / 128;
+      else if (bits === 16) v = dv.getInt16(q, true) / 32768;
+      else if (bits === 24) { let t = u8[q] | (u8[q + 1] << 8) | (u8[q + 2] << 16); if (t & 0x800000) t -= 0x1000000; v = t / 8388608; }
+      else v = dv.getInt32(q, true) / 2147483648;
+      chans[c][i] = Number.isFinite(v) ? v : 0; q += bps;
+    }
+    return Object.assign(audio(rate, chans), { bits, float });
+  }
+
+  /* ================= AIFF ================= */
+  function ext80(rate) {   // inteiro → extended 80 bits
+    const out = new Uint8Array(10); if (!rate) return out;
+    let e = 0, m = rate; while (m < 0x80000000) { m *= 2; e++; }
+    const exp = 16383 + 31 - e; out[0] = exp >> 8; out[1] = exp & 255;
+    const hi = m >>> 0; out[2] = hi >>> 24; out[3] = (hi >>> 16) & 255; out[4] = (hi >>> 8) & 255; out[5] = hi & 255;
+    return out;
+  }
+  const unext80 = (u8, o) => { const exp = ((u8[o] & 0x7f) << 8) | u8[o + 1], hi = ((u8[o + 2] << 24) | (u8[o + 3] << 16) | (u8[o + 4] << 8) | u8[o + 5]) >>> 0; return Math.round(hi * 2 ** (exp - 16383 - 31)); };
+
+  /** Grava AIFF (PCM big-endian 16 ou 24 bits). */
+  function encodeAIFF(a, o) {
+    checkAudio(a); const bits = (o && o.bits) || 16;
+    if (bits !== 16 && bits !== 24) fail('AIFF aceita 16 ou 24 bits.');
+    const ch = a.channels.length, n = frames(a), bps = bits / 8, dl = n * ch * bps;
+    const out = new Uint8Array(12 + 26 + 16 + dl + (dl & 1)), dv = new DataView(out.buffer);
+    const tag = (p, s) => { for (let i = 0; i < 4; i++) out[p + i] = s.charCodeAt(i); };
+    tag(0, 'FORM'); dv.setUint32(4, out.length - 8); tag(8, 'AIFF'); tag(12, 'COMM'); dv.setUint32(16, 18);
+    dv.setUint16(20, ch); dv.setUint32(22, n); dv.setUint16(26, bits); out.set(ext80(a.sampleRate), 28);
+    tag(38, 'SSND'); dv.setUint32(42, dl + 8); let p = 54;
+    for (let i = 0; i < n; i++) for (let c = 0; c < ch; c++) {
+      const v = toInt(a.channels[c][i], bits);
+      if (bits === 16) { dv.setInt16(p, v); p += 2; } else { out[p++] = (v >> 16) & 255; out[p++] = (v >> 8) & 255; out[p++] = v & 255; }
+    }
+    return out;
+  }
+  function decodeAIFF(u8) {
+    if (u8.length < 54 || ascii(u8, 0, 4) !== 'FORM' || ascii(u8, 8, 4) !== 'AIFF') fail('Não é um arquivo AIFF.');
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    let p = 12, ch = 0, n = 0, bits = 0, rate = 0, data = null;
+    while (p + 8 <= u8.length) {
+      const id = ascii(u8, p, 4); let len = dv.getUint32(p + 4); p += 8;
+      if (id === 'COMM') { ch = dv.getUint16(p); n = dv.getUint32(p + 2); bits = dv.getUint16(p + 6); rate = unext80(u8, p + 8); }
+      else if (id === 'SSND') { const off = dv.getUint32(p); data = [p + 8 + off, Math.min(len - 8 - off, u8.length - p - 8 - off)]; break; }
+      p += len + (len & 1);
+    }
+    if (!ch || !data || ch > 8 || (bits !== 16 && bits !== 24) || !rate) fail('AIFF não suportado.');
+    const bps = bits / 8; n = Math.min(n, Math.floor(data[1] / (bps * ch)));
+    if (n * ch > MAX_SAMPLES) fail('Áudio longo demais para processar.');
+    const chans = Array.from({ length: ch }, () => new Float32Array(n)); let q = data[0];
+    for (let i = 0; i < n; i++) for (let c = 0; c < ch; c++) {
+      if (bits === 16) { chans[c][i] = dv.getInt16(q) / 32768; q += 2; }
+      else { let t = (u8[q] << 16) | (u8[q + 1] << 8) | u8[q + 2]; if (t & 0x800000) t -= 0x1000000; chans[c][i] = t / 8388608; q += 3; }
+    }
+    return Object.assign(audio(rate, chans), { bits });
+  }
+
+  /* ================= FLAC (gravação sem perdas) ================= */
+  /** Grava FLAC de 16 ou 24 bits: predição fixa (ordens 0–4), Rice por partições, CRC-8/16. */
+  function encodeFLAC(a, o) {
+    checkAudio(a); o = o || {};
+    const bits = o.bits === 24 ? 24 : 16, ch = a.channels.length, n = frames(a), rate = a.sampleRate;
+    if (ch > 8 || rate > 655350) fail('FLAC não aceita estes parâmetros.');
+    const BS = 4096, pcm = a.channels.map(c => { const r = new Int32Array(n); for (let i = 0; i < n; i++) r[i] = toInt(c[i], bits); return r; });
+    const parts = [new Uint8Array([0x66, 0x4C, 0x61, 0x43])];
+    // STREAMINFO (último bloco de metadados)
+    const si = new BitWriter(48);
+    si.write(0x80, 8); si.write(34, 24); si.write(BS, 16); si.write(BS, 16); si.write(0, 24); si.write(0, 24);
+    si.write(rate, 20); si.write(ch - 1, 3); si.write(bits - 1, 5); si.write(Math.floor(n / 2 ** 32), 4); si.write(n >>> 0, 32);
+    for (let i = 0; i < 4; i++) si.write(0, 32);   // MD5 zerado = "não calculado"
+    parts.push(si.bytes().slice());
+    const total = Math.ceil(n / BS);
+    for (let f = 0; f < total; f++) {
+      const a0 = f * BS, len = Math.min(BS, n - a0), w = new BitWriter(len * ch * 3 + 64);
+      w.write(0xFFF8, 16);   // sync + blocos de tamanho fixo
+      w.write(len === BS ? 12 : 7, 4);   // 1100 = 4096; 0111 = 16 bits (len-1) no fim do cabeçalho
+      w.write(0, 4);         // taxa: ver STREAMINFO
+      w.write(ch - 1, 4); w.write(bits === 16 ? 4 : 6, 3); w.write(0, 1);
+      // número do quadro (UTF-8 estendido)
+      if (f < 0x80) w.write(f, 8);
+      else {
+        const nb = f < 0x800 ? 2 : f < 0x10000 ? 3 : f < 0x200000 ? 4 : f < 0x4000000 ? 5 : 6;
+        w.write(((0xFF00 >> nb) & 255) | (f >> (6 * (nb - 1))), 8);
+        for (let k = nb - 2; k >= 0; k--) w.write(0x80 | ((f >> (6 * k)) & 63), 8);
+      }
+      if (len !== BS) w.write(len - 1, 16);
+      const hdr = w.bytes(); w.write(crc8(hdr, 0, w.n), 8);
+      for (let c = 0; c < ch; c++) flacSubframe(w, pcm[c].subarray(a0, a0 + len), bits);
+      w.align(); w.write(crc16(w.buf, 0, w.n), 16);
+      parts.push(w.bytes().slice());
+    }
+    return concatBytes(parts);
+  }
+  function flacSubframe(w, x, bits) {
+    const len = x.length; let constant = true;
+    for (let i = 1; i < len; i++) if (x[i] !== x[0]) { constant = false; break; }
+    if (constant) { w.write(0, 8); w.signed(x[0], bits); return; }
+    let best = null;
+    const maxOrd = Math.min(4, len - 1);
+    for (let ord = 0; ord <= maxOrd; ord++) {
+      const r = new Int32Array(len - ord);
+      for (let i = ord; i < len; i++) {
+        r[i - ord] = ord === 0 ? x[i] : ord === 1 ? x[i] - x[i - 1] : ord === 2 ? x[i] - 2 * x[i - 1] + x[i - 2]
+          : ord === 3 ? x[i] - 3 * x[i - 1] + 3 * x[i - 2] - x[i - 3] : x[i] - 4 * x[i - 1] + 6 * x[i - 2] - 4 * x[i - 3] + x[i - 4];
+      }
+      let sum = 0; for (let i = 0; i < r.length; i++) sum += Math.abs(r[i]);
+      const k = riceParam(sum, r.length), size = riceSize(r, k);
+      if (!best || size < best.size) best = { ord, r, k, size };
+    }
+    if (!best || best.size >= len * bits || best.k > 14 || best.r.some(v => Math.abs(v) > 2 ** (bits + 2))) {   // verbatim
+      w.write(2, 8); for (let i = 0; i < len; i++) w.signed(x[i], bits); return;
+    }
+    w.write(0x10 | (best.ord << 1), 8);   // 0 + 001ord + 0 (bits desperdiçados)
+    for (let i = 0; i < best.ord; i++) w.signed(x[i], bits);
+    w.write(0, 2); w.write(0, 4); w.write(best.k, 4);
+    const r = best.r, k = best.k;
+    for (let i = 0; i < r.length; i++) {
+      const u = r[i] >= 0 ? r[i] * 2 : -r[i] * 2 - 1, q = Math.floor(u / 2 ** k);
+      w.unary(q); if (k) w.write(u % 2 ** k, k);
+    }
+  }
+  const riceParam = (sum, n) => { if (!n) return 0; const mean = sum / n; let k = 0; while (k < 14 && 2 ** (k + 1) <= mean) k++; return k; };
+  const riceSize = (r, k) => { let s = 10 + 0; for (let i = 0; i < r.length; i++) { const u = r[i] >= 0 ? r[i] * 2 : -r[i] * 2 - 1; s += Math.floor(u / 2 ** k) + 1 + k; } return s; };
+
+  /* ================= processamento de áudio ================= */
+  const copy = a => audio(a.sampleRate, a.channels.map(c => c.slice()));
+  /** Mistura para `n` canais (1 = mono, 2 = estéreo). */
+  function remix(a, n) {
+    checkAudio(a); const ch = a.channels.length;
+    if (n === ch) return copy(a);
+    const len = frames(a), out = Array.from({ length: n }, () => new Float32Array(len));
+    if (n === 1) { for (let i = 0; i < len; i++) { let s = 0; for (let c = 0; c < ch; c++) s += a.channels[c][i]; out[0][i] = s / ch; } }
+    else for (let c = 0; c < n; c++) out[c].set(a.channels[ch === 1 ? 0 : Math.min(c, ch - 1)]);
+    return audio(a.sampleRate, out);
+  }
+  /** Reamostra por interpolação cúbica (Catmull-Rom). Para reduzir muito a taxa aplica antes um filtro passa-baixa simples. */
+  function resample(a, rate) {
+    checkAudio(a); rate = Math.round(rate);
+    if (!(rate >= 3000 && rate <= 384000)) fail('Taxa de amostragem inválida.');
+    if (rate === a.sampleRate) return copy(a);
+    const ratio = a.sampleRate / rate, len = Math.max(1, Math.floor(frames(a) / ratio));
+    if (len * a.channels.length > MAX_SAMPLES) fail('Áudio longo demais para processar.');
+    return audio(rate, a.channels.map(src0 => {
+      let src = src0;
+      if (ratio > 1) {   // média móvel proporcional à razão (anti-aliasing básico)
+        const w = Math.max(1, Math.round(ratio)), t = new Float32Array(src0.length);
+        let acc = 0; const h = w >> 1;
+        for (let i = 0; i < src0.length; i++) { acc += src0[i]; if (i >= w) acc -= src0[i - w]; const j = i - h; if (j >= 0) t[j] = acc / Math.min(w, i + 1); }
+        src = t;
+      }
+      const out = new Float32Array(len), m = src.length - 1;
+      for (let i = 0; i < len; i++) {
+        const pos = i * ratio, i1 = Math.floor(pos), f = pos - i1;
+        const p0 = src[Math.max(0, i1 - 1)], p1 = src[Math.min(m, i1)], p2 = src[Math.min(m, i1 + 1)], p3 = src[Math.min(m, i1 + 2)];
+        out[i] = p1 + 0.5 * f * (p2 - p0 + f * (2 * p0 - 5 * p1 + 4 * p2 - p3 + f * (3 * (p1 - p2) + p3 - p0)));
+      }
+      return out;
+    }));
+  }
+  /** Pico absoluto e RMS (0–1). */
+  function level(a) {
+    let peak = 0, sum = 0, n = 0;
+    a.channels.forEach(c => { for (let i = 0; i < c.length; i++) { const v = Math.abs(c[i]); if (v > peak) peak = v; sum += c[i] * c[i]; } n += c.length; });
+    return { peak, rms: n ? Math.sqrt(sum / n) : 0 };
+  }
+
+  const api = { audio, frames, duration, copy, remix, resample, level, encodeWAV, decodeWAV, encodeAIFF, decodeAIFF, encodeFLAC, crc8, crc16, BitWriter, concatBytes, toInt, MAX_SAMPLES };
+  if (R4 && R4.module) R4.module('codec', api, {
+    title: 'R4.codec', group: 'Mídia',
+    description: 'Codificadores e decodificadores de áudio feitos à mão (sem bibliotecas): WAV, AIFF e FLAC, mixagem, reamostragem e medição de nível. Base do R4.convert, R4.audio e R4.music.',
+    props: [
+      { name: 'encodeWAV(áudio, {bits:16|24|32|8, float:false})', type: 'Uint8Array', desc: 'Grava WAV PCM (ou float 32 com float:true).' },
+      { name: 'decodeWAV(bytes)', type: 'áudio', desc: 'Lê WAV PCM 8/16/24/32 e float 32/64, inclusive WAVE_FORMAT_EXTENSIBLE; valida tamanhos.' },
+      { name: 'encodeAIFF(áudio, {bits:16|24}) / decodeAIFF(bytes)', type: 'Uint8Array / áudio', desc: 'AIFF PCM big-endian.' },
+      { name: 'encodeFLAC(áudio, {bits:16|24})', type: 'Uint8Array', desc: 'FLAC sem perdas (predição fixa + Rice, CRC-8/16).' },
+      { name: 'remix(áudio, canais) / resample(áudio, taxa) / level(áudio)', type: 'áudio / {peak, rms}', desc: 'Mono/estéreo, reamostragem cúbica e medição.' }
+    ]
+  });
+  if (R4) R4.codec = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+})(typeof window !== 'undefined' ? window.R4 : undefined);

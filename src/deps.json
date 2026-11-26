@@ -1,0 +1,197 @@
+{
+ "support": [
+  "core"
+ ],
+ "store": [
+  "core"
+ ],
+ "net": [
+  "core",
+  "support"
+ ],
+ "components": [
+  "core"
+ ],
+ "declarative": [
+  "core",
+  "components"
+ ],
+ "quick": [
+  "core"
+ ],
+ "tabs": [
+  "core",
+  "store"
+ ],
+ "icons": [
+  "core",
+  "components",
+  "quick"
+ ],
+ "form": [
+  "core",
+  "components",
+  "declarative",
+  "quick"
+ ],
+ "sanitize": [
+  "core"
+ ],
+ "files": [
+  "core",
+  "sanitize"
+ ],
+ "imageeditor": [
+  "core",
+  "components",
+  "declarative",
+  "quick",
+  "sanitize"
+ ],
+ "ui": [
+  "core",
+  "components",
+  "declarative",
+  "quick"
+ ],
+ "chart": [
+  "core",
+  "components",
+  "declarative",
+  "quick"
+ ],
+ "theme": [
+  "core",
+  "store",
+  "components",
+  "declarative",
+  "quick"
+ ],
+ "preview": [
+  "core"
+ ],
+ "reactive": [
+  "core",
+  "preview"
+ ],
+ "admin": [
+  "core",
+  "components",
+  "declarative",
+  "quick",
+  "form",
+  "preview",
+  "reactive"
+ ],
+ "codec": [
+  "core"
+ ],
+ "mux": [
+  "core"
+ ],
+ "demux": [
+  "core",
+  "mux"
+ ],
+ "audio": [
+  "core",
+  "codec",
+  "mux",
+  "demux"
+ ],
+ "dsp": [
+  "core",
+  "codec",
+  "audio"
+ ],
+ "video": [
+  "core",
+  "codec",
+  "mux",
+  "demux",
+  "audio"
+ ],
+ "gfx": [
+  "core"
+ ],
+ "timeline": [
+  "core",
+  "components",
+  "declarative",
+  "quick",
+  "form",
+  "codec",
+  "demux",
+  "audio",
+  "dsp",
+  "video",
+  "gfx"
+ ],
+ "image": [
+  "core",
+  "codec",
+  "demux"
+ ],
+ "music": [
+  "core",
+  "codec",
+  "audio"
+ ],
+ "convert": [
+  "core",
+  "components",
+  "declarative",
+  "quick",
+  "form",
+  "files",
+  "codec",
+  "demux",
+  "audio",
+  "video",
+  "image",
+  "music"
+ ],
+ "queue": [
+  "core",
+  "components",
+  "declarative",
+  "quick",
+  "form",
+  "codec",
+  "audio",
+  "video",
+  "timeline",
+  "convert"
+ ],
+ "mediaui": [
+  "core",
+  "components",
+  "declarative",
+  "quick",
+  "form",
+  "sanitize",
+  "files",
+  "codec",
+  "audio",
+  "video",
+  "image",
+  "music",
+  "convert"
+ ],
+ "timelineui": [
+  "core",
+  "components",
+  "declarative",
+  "quick",
+  "form",
+  "sanitize",
+  "codec",
+  "audio",
+  "dsp",
+  "video",
+  "gfx",
+  "timeline",
+  "music",
+  "queue"
+ ]
+}

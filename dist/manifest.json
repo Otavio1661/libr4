@@ -1,0 +1,215 @@
+{
+    "versao": "2.0.0",
+    "modulos": [
+        "core",
+        "support",
+        "store",
+        "net",
+        "components",
+        "declarative",
+        "quick",
+        "tabs",
+        "icons",
+        "form",
+        "sanitize",
+        "files",
+        "imageeditor",
+        "ui",
+        "chart",
+        "theme",
+        "preview",
+        "reactive",
+        "admin",
+        "codec",
+        "mux",
+        "demux",
+        "audio",
+        "dsp",
+        "video",
+        "gfx",
+        "timeline",
+        "image",
+        "music",
+        "convert",
+        "queue",
+        "mediaui",
+        "timelineui"
+    ],
+    "arquivos": {
+        "libr4.min.js": {
+            "bytes": 962534,
+            "gzip": 321199,
+            "sha384": "sha384-AITvTywM3EIUFOu9kByYo9x7NT8ML8tCf2vq7VnA6Vfev/viqGScdnOUbca4hyr/"
+        },
+        "libr4.min.css": {
+            "bytes": 80987,
+            "gzip": 15519,
+            "sha384": "sha384-tzlju5QLHacflXLGOldzGKIc0wD1jUJz+dv+DJ2+pDqm+0cNSIZcHWK/a4Avi37H"
+        },
+        "modules/core.min.js": {
+            "bytes": 9736,
+            "gzip": 4255,
+            "sha384": "sha384-3JjeEuxhRgZ8PoAbJUnfI8dKMCJIHbV8EvrjxSY+DKP3eNTVo2JDyQW734T+kaEe"
+        },
+        "modules/support.min.js": {
+            "bytes": 7926,
+            "gzip": 3194,
+            "sha384": "sha384-Zaz3dYVLT+e5qlj/VSQgzeXyDHGeHu2ZQK1X3BL8q0GPD0OKOICwnyXan+HiNFy6"
+        },
+        "modules/store.min.js": {
+            "bytes": 14278,
+            "gzip": 6008,
+            "sha384": "sha384-UCC2Zd5BzTWg39R/Fur7yzuw5OpUdwyGSdKVnR+q2Q+yUzBDkfYr1sFSg2AQz1DO"
+        },
+        "modules/net.min.js": {
+            "bytes": 18318,
+            "gzip": 6855,
+            "sha384": "sha384-R74v6wapaY/O3hTkyGAm+Ngoti4oiPGyqn+VUAQ4rYvBD5IAEmJTE1sVlQGSFIm2"
+        },
+        "modules/components.min.js": {
+            "bytes": 81098,
+            "gzip": 26213,
+            "sha384": "sha384-nEA01fT1O1wgIbldh+CujEbjjGjdSclGfbCpTv9py934/B7iK3/1QgFn943960p0"
+        },
+        "modules/declarative.min.js": {
+            "bytes": 15039,
+            "gzip": 6028,
+            "sha384": "sha384-5GNBZlGb3SIfn3qFshWsObDMObYg938c4QwB+5U2+LclDr7X04r0CsMyfxdmgoo+"
+        },
+        "modules/quick.min.js": {
+            "bytes": 3365,
+            "gzip": 1558,
+            "sha384": "sha384-jVwStFCad6GRgHRxzpycKhScDj5T4OR86n9QcVA1VaVytYzBM/nS3/pbaEltWkCS"
+        },
+        "modules/tabs.min.js": {
+            "bytes": 9187,
+            "gzip": 3656,
+            "sha384": "sha384-eOGJQ+UaSQC7n1qybv+rKc99rYYyq3peXtp3CKavGv/kkxYmZfA+JZ32Wa1Vtgmk"
+        },
+        "modules/icons.min.js": {
+            "bytes": 9998,
+            "gzip": 4490,
+            "sha384": "sha384-DEluIhKUPytZUxQN5Y2C6Uxh7j5dqIhdWWTzaMEcmeDBkWZxYs/4cjkWV+BywpOd"
+        },
+        "modules/form.min.js": {
+            "bytes": 86657,
+            "gzip": 27770,
+            "sha384": "sha384-h065W0VHgy+pc4T4QSyN8q7b0wW7rAUOUPyuT9FjL7UfNwu+zRDc055Ehv1CDu4H"
+        },
+        "modules/sanitize.min.js": {
+            "bytes": 15607,
+            "gzip": 7308,
+            "sha384": "sha384-MaNXQtBbAuOX4Sy+MQp2RSz7vnYIG26aTGYoYbY+sNhpX6+5W3I4pKOJ36LmfLNP"
+        },
+        "modules/files.min.js": {
+            "bytes": 56283,
+            "gzip": 20420,
+            "sha384": "sha384-Rw185enQlL7HgI6iHHzKHsbcpDaJYTRSFP8VfRyrtjwQL/HegQtFADrB3qp3LaTu"
+        },
+        "modules/imageeditor.min.js": {
+            "bytes": 29640,
+            "gzip": 11509,
+            "sha384": "sha384-mBRXy9bKVUmeSUe8Jfi2DuCEm0XCHZnm1g+NzdwRH+eDYzMAsLQRGgHtDFq9q7bw"
+        },
+        "modules/ui.min.js": {
+            "bytes": 72304,
+            "gzip": 22496,
+            "sha384": "sha384-4rJBQtnpJeNoAWSJSwDtjmhmlu84E+V3Z7L5i16XWCCQXYNI4mMd5+qb46wCeG3J"
+        },
+        "modules/chart.min.js": {
+            "bytes": 56144,
+            "gzip": 19595,
+            "sha384": "sha384-s4WZ08HF8wCTJI0ozqx6684GmY0ihVNu3Owcrkr3l4Xq9dOAG+NSuRi/N9z+P4my"
+        },
+        "modules/theme.min.js": {
+            "bytes": 40656,
+            "gzip": 15325,
+            "sha384": "sha384-fKVg2rZNA3oB8zL5rT6CTjehFwbTQL/TCfReayrvQSL4ePfaWu/PyZjzDJxBjGCI"
+        },
+        "modules/preview.min.js": {
+            "bytes": 7177,
+            "gzip": 3249,
+            "sha384": "sha384-GPCE7YIUQuvUDaM5rr85jUq5979FuFiG65yxXlRjKwsT4vyi+XxPtzSkSnGjz5TE"
+        },
+        "modules/reactive.min.js": {
+            "bytes": 19310,
+            "gzip": 7311,
+            "sha384": "sha384-RwcchaaSml5SqAcvrg3BgZMIG97EO0jClvJtXU3F033IN3fG84bBf1gJXntpe1hV"
+        },
+        "modules/admin.min.js": {
+            "bytes": 47330,
+            "gzip": 15732,
+            "sha384": "sha384-79V1hYbYb5tnhJfxjIu1cuHY6guXbSI2mleMLN3LL6Ke1+/oDy/J2Sssrj3yDKE8"
+        },
+        "modules/codec.min.js": {
+            "bytes": 12486,
+            "gzip": 4706,
+            "sha384": "sha384-5CMopg2vlCbLv5CDXiwogj7N57m6y20e0d6N57UiiL+tblJmcdRcNG0XCOkwv/3/"
+        },
+        "modules/mux.min.js": {
+            "bytes": 13957,
+            "gzip": 5241,
+            "sha384": "sha384-MFTAnjdSbh7AKdJ4bV8kwlxHMpXq6QpPCBZ5lzYppAqurHjfYuDhWVSYb33CIwZy"
+        },
+        "modules/demux.min.js": {
+            "bytes": 12187,
+            "gzip": 4829,
+            "sha384": "sha384-K3gFFOVFyomVcyW43RVWeOd/iC2VZY8SyvFKX2Id9vlWQBnTebvk56aq+40xkvkt"
+        },
+        "modules/audio.min.js": {
+            "bytes": 17714,
+            "gzip": 6726,
+            "sha384": "sha384-NzQV7h0reFRn85+L3ttGc/qOTXlTNqPd1LAXJiUOSfeMyB0fnWDjLdJ14MXWVSFd"
+        },
+        "modules/dsp.min.js": {
+            "bytes": 20154,
+            "gzip": 7920,
+            "sha384": "sha384-eRq3ArrJgnyC+jh0mY8GSGfFqjF4B97CxsUb2JA6K+qwsTaTKQ727zgM4fBSXGYI"
+        },
+        "modules/video.min.js": {
+            "bytes": 17944,
+            "gzip": 7110,
+            "sha384": "sha384-sG4B8lf43VPQ0YR9/gjHMEkqfxuy3fVk5yePRxbtYsUrio0UCbBeX3sXXDVklbTz"
+        },
+        "modules/gfx.min.js": {
+            "bytes": 16273,
+            "gzip": 6744,
+            "sha384": "sha384-ymwqVG4Zm37j+8+KgpzR4FT09F0r+c+h8eSFaXZp/c6K6U2JyDGiSlRCHEuYaAuE"
+        },
+        "modules/timeline.min.js": {
+            "bytes": 53442,
+            "gzip": 19016,
+            "sha384": "sha384-eBaQWSSH2A8SyY9DB9sYfIDZ/GzthH2nrZVE9pJ2F0WMeU6vJ4bfvvOB9wN888wE"
+        },
+        "modules/image.min.js": {
+            "bytes": 13641,
+            "gzip": 5633,
+            "sha384": "sha384-cWqX2kJkUcW1JoCllNQdxtPZS4P9nr7sCLQRA7mmPxvee11hDkGmA8T2LRGnz2Nh"
+        },
+        "modules/music.min.js": {
+            "bytes": 20737,
+            "gzip": 7814,
+            "sha384": "sha384-TsMGWeJtEFtzfSKFM0Ua2gpwv89X32OA3Ru2dAyOu8B52bsW0LxNYG6tp+eLf8Ko"
+        },
+        "modules/convert.min.js": {
+            "bytes": 7948,
+            "gzip": 3255,
+            "sha384": "sha384-L9sFp0fARDdtY26UTpQRO8znBpCxDSRHvbQ0XSUUSXxZIqPR3o4QGszN+2hLcYeM"
+        },
+        "modules/queue.min.js": {
+            "bytes": 5966,
+            "gzip": 2540,
+            "sha384": "sha384-XfgYkbNpkYIWBS9nNnxNTc1G+YBw/aTzJvi/ORdNx1KPQM23o9GGBhkX8pRQqK+9"
+        },
+        "modules/mediaui.min.js": {
+            "bytes": 37270,
+            "gzip": 11470,
+            "sha384": "sha384-xaL1Y3sXEGJzsT0OiN1v9YgVsDgeU81OmECbf7FNuU9cFjkelz50gYf3xePnT5Xm"
+        },
+        "modules/timelineui.min.js": {
+            "bytes": 112686,
+            "gzip": 36488,
+            "sha384": "sha384-HUQ5UG4MIdYO55Eny1jBZoVyE8avgec2rBASLvdixJkgx8m+dROtSv44KfcOg4Nh"
+        }
+    }
+}

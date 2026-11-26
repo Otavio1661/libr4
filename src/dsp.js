@@ -1,0 +1,441 @@
+/**
+ * ============================================
+ * libr4 / dsp.js  —  R4 dev
+ * ============================================
+ * R4.dsp: tratamento e mixagem de áudio, sem bibliotecas. Áudio = { sampleRate, channels: [Float32Array...] } (veja R4.codec).
+ *  Medição: lufs (integrado, curto prazo, momentâneo, pico verdadeiro), normalizeLUFS.
+ *  Dinâmica: limiter, gate, deesser, duck (auto-ducking), compress/equalizer/filter vêm de R4.audio.
+ *  Restauração: denoise, declick, declip, dereverb.
+ *  Análise: syncOffset (sincroniza áudio externo por correlação), detectF0, pitchCorrect (correção de afinação por escala).
+ *  Mixagem: curve (automação), mixdown (faixas, buses, sends/returns, automação), register (plugins próprios por nome), fx.
+ * Tudo offline e determinístico; as funções devolvem áudio novo e não alteram a entrada.
+ * ============================================
+ */
+(function (R4) {
+  'use strict';
+  const C = (R4 && R4.codec) || (typeof require !== 'undefined' ? require('./codec.js') : null);
+  const A = (R4 && R4.audio) || (typeof require !== 'undefined' ? require('./audio.js') : null);
+  const fail = (m, code) => { const e = new Error(m); if (code) e.code = code; throw e; };
+  const { audio, frames, copy, remix, resample } = C;
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  const db2g = d => Math.pow(10, d / 20), g2db = g => 20 * Math.log10(g + 1e-12);
+  const map = (a, f) => audio(a.sampleRate, a.channels.map(f));
+  const chk = a => { if (!a || !Array.isArray(a.channels) || !a.channels.length || !(a.sampleRate > 0)) fail('Áudio inválido.'); };
+
+  /* ================= FFT (radix-2, no lugar) ================= */
+  function fft(re, im, inv) {
+    const n = re.length;
+    for (let i = 1, j = 0; i < n; i++) {
+      let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit;
+      if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+    }
+    for (let len = 2; len <= n; len <<= 1) {
+      const ang = 2 * Math.PI / len * (inv ? 1 : -1), wr = Math.cos(ang), wi = Math.sin(ang), h = len >> 1;
+      for (let i = 0; i < n; i += len) {
+        let cr = 1, ci = 0;
+        for (let k = 0; k < h; k++) {
+          const a = i + k, b = a + h, xr = re[b] * cr - im[b] * ci, xi = re[b] * ci + im[b] * cr;
+          re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi;
+          const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+        }
+      }
+    }
+    if (inv) for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
+  }
+
+  /* ================= biquad ================= */
+  function biquad(type, rate, f, q) {
+    const w = 2 * Math.PI * clamp(f, 10, rate / 2 - 10) / rate, cs = Math.cos(w), al = Math.sin(w) / (2 * (q || Math.SQRT1_2));
+    let b0, b1, b2; const a0 = 1 + al, a1 = -2 * cs, a2 = 1 - al;
+    if (type === 'lp') { b0 = (1 - cs) / 2; b1 = 1 - cs; b2 = b0; }
+    else if (type === 'hp') { b0 = (1 + cs) / 2; b1 = -(1 + cs); b2 = b0; }
+    else { b0 = al; b1 = 0; b2 = -al; }
+    return [b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0];
+  }
+  function runBiquad(x, k) {
+    const y = new Float32Array(x.length); let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    for (let i = 0; i < x.length; i++) { const v = k[0] * x[i] + k[1] * x1 + k[2] * x2 - k[3] * y1 - k[4] * y2; x2 = x1; x1 = x[i]; y2 = y1; y1 = v; y[i] = v; }
+    return y;
+  }
+
+  /* ================= LUFS (ITU-R BS.1770-4 / EBU R128) ================= */
+  const KS = [[1.53512485958697, -2.69169618940638, 1.19839281085285, -1.69065929318241, 0.73248077421585], [1, -2, 1, -1.99004745483398, 0.99007225036621]];
+  function kWeight(x) { return runBiquad(runBiquad(x, KS[0]), KS[1]); }
+  const weights = n => (n === 1 ? [1] : n === 2 ? [1, 1] : n === 6 ? [1, 1, 1, 0, 1.41, 1.41] : n === 8 ? [1, 1, 1, 0, 1.41, 1.41, 1.41, 1.41] : Array.from({ length: n }, () => 1));
+  /** Pico verdadeiro (dBTP) com sobreamostragem 4x (sinc com janela). */
+  function truePeak(a) {
+    const L = 12, os = 4, taps = []; // 4 fases, 2*L pontos
+    for (let p = 1; p < os; p++) { const h = []; for (let k = -L + 1; k <= L; k++) { const x = k - p / os, s = x === 0 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x), w = 0.5 + 0.5 * Math.cos(Math.PI * x / L); h.push(s * w); } taps.push(h); }
+    let pk = 0;
+    a.channels.forEach(c => {
+      for (let i = 0; i < c.length; i++) { const v = Math.abs(c[i]); if (v > pk) pk = v; }
+      for (let i = L; i < c.length - L; i += 1) {
+        for (let p = 0; p < taps.length; p++) { let s = 0; const h = taps[p]; for (let k = 0; k < h.length; k++) s += c[i + k - L + 1] * h[k]; if (Math.abs(s) > pk) pk = Math.abs(s); }
+      }
+    });
+    return g2db(pk);
+  }
+  /** Medida de volume. Devolve {integrated, shortTerm, momentary, range, truePeak, samplePeak} (LUFS/LU/dBTP). */
+  function lufs(a, o) {
+    chk(a); o = o || {};
+    const r = a.sampleRate !== 48000 ? resample(a, 48000) : a, rate = 48000, w = weights(r.channels.length);
+    const sq = r.channels.map((c, i) => { const k = kWeight(c), s = new Float64Array(k.length); for (let j = 0; j < k.length; j++) s[j] = k[j] * k[j] * w[i]; return s; });
+    const n = r.channels[0].length, cum = new Float64Array(n + 1);
+    for (let j = 0; j < n; j++) { let s = 0; for (let c = 0; c < sq.length; c++) s += sq[c][j]; cum[j + 1] = cum[j] + s; }
+    const win = (sec, step) => { const N = Math.round(sec * rate), H = Math.round(step * rate), out = []; for (let s = 0; s + N <= n; s += H) out.push((cum[s + N] - cum[s]) / N); return out; };
+    const toL = z => -0.691 + 10 * Math.log10(z + 1e-12);
+    const mom = win(0.4, 0.1), shortT = win(3, 1);
+    const gated = blocks => {
+      const abs = blocks.filter(z => toL(z) > -70); if (!abs.length) return -Infinity;
+      const rel = toL(abs.reduce((s, z) => s + z, 0) / abs.length) - 10, ok = abs.filter(z => toL(z) > rel);
+      return ok.length ? toL(ok.reduce((s, z) => s + z, 0) / ok.length) : -Infinity;
+    };
+    let range = 0;
+    const st = shortT.filter(z => toL(z) > -70);
+    if (st.length > 1) {
+      const rel = toL(st.reduce((s, z) => s + z, 0) / st.length) - 20, v = st.filter(z => toL(z) > rel).map(toL).sort((x, y) => x - y);
+      if (v.length > 1) range = v[Math.floor(0.95 * (v.length - 1))] - v[Math.floor(0.1 * (v.length - 1))];
+    }
+    let sp = 0; a.channels.forEach(c => { for (let i = 0; i < c.length; i++) { const v = Math.abs(c[i]); if (v > sp) sp = v; } });
+    return {
+      integrated: gated(mom), range,
+      shortTerm: shortT.length ? Math.max.apply(null, shortT.map(toL)) : (mom.length ? toL(mom.reduce((s, z) => s + z, 0) / mom.length) : -Infinity),
+      momentary: mom.length ? Math.max.apply(null, mom.map(toL)) : -Infinity,
+      truePeak: o.truePeak === false ? g2db(sp) : truePeak(a), samplePeak: g2db(sp)
+    };
+  }
+  /** Ajusta o volume integrado para `alvo` LUFS (padrão -16), sem passar do pico verdadeiro `teto` dBTP (padrão -1). */
+  function normalizeLUFS(a, alvo, teto) {
+    alvo = alvo == null ? -16 : alvo; teto = teto == null ? -1 : teto;
+    const m = lufs(a); if (!isFinite(m.integrated)) return copy(a);
+    let g = alvo - m.integrated; if (m.truePeak + g > teto) g = teto - m.truePeak;
+    const k = db2g(g); return map(a, c => c.map(v => v * k));
+  }
+
+  /* ================= dinâmica ================= */
+  /** Limitador com antecipação: nunca passa de `ceiling` dB. {ceiling:-1, lookahead:0.005} */
+  function limiter(a, o) {
+    chk(a); o = Object.assign({ ceiling: -1, lookahead: 0.005 }, o);
+    const n = frames(a), cl = db2g(o.ceiling), N = Math.max(1, Math.round(o.lookahead * a.sampleRate));
+    const need = new Float32Array(n);
+    for (let i = 0; i < n; i++) { let m = 0; for (const c of a.channels) { const v = Math.abs(c[i]); if (v > m) m = v; } need[i] = m > cl ? cl / m : 1; }
+    // mínimo deslizante (deque) sobre [i, i+N)
+    const mn = new Float32Array(n), dq = new Int32Array(n + N); let h = 0, t = 0;
+    for (let i = n - 1; i >= 0; i--) {
+      while (t > h && need[dq[t - 1]] >= need[i]) t--; dq[t++] = i;
+      while (dq[h] >= i + N) h++;
+      mn[i] = need[dq[h]];
+    }
+    // média móvel de N amostras (suaviza o ataque)
+    const g = new Float32Array(n); let acc = 0;
+    for (let i = 0; i < n; i++) { acc += mn[i]; if (i >= N) acc -= mn[i - N]; g[i] = acc / Math.min(i + 1, N); }
+    // a suavização pode deixar escapar um pouco: garante o teto
+    const out = map(a, c => { const r = new Float32Array(n); for (let i = 0; i < n; i++) r[i] = c[i] * g[i]; return r; });
+    out.channels.forEach(c => { for (let i = 0; i < n; i++) { if (c[i] > cl) c[i] = cl; else if (c[i] < -cl) c[i] = -cl; } });
+    return out;
+  }
+
+  function envelope(a, atk, rel) {
+    const n = frames(a), ca = Math.exp(-1 / (atk * a.sampleRate)), cr = Math.exp(-1 / (rel * a.sampleRate)), env = new Float32Array(n); let e = 0;
+    for (let i = 0; i < n; i++) { let m = 0; for (const c of a.channels) { const v = Math.abs(c[i]); if (v > m) m = v; } e = m > e ? ca * e + (1 - ca) * m : cr * e + (1 - cr) * m; env[i] = e; }
+    return env;
+  }
+  /** Noise gate. {threshold:-45, range:-80, attack:0.002, hold:0.05, release:0.12} */
+  function gate(a, o) {
+    chk(a); o = Object.assign({ threshold: -45, range: -80, attack: 0.002, hold: 0.05, release: 0.12 }, o);
+    const n = frames(a), env = envelope(a, 0.0005, 0.01), th = db2g(o.threshold), lo = db2g(o.threshold - 4), floor = db2g(o.range);
+    const ca = Math.exp(-1 / (o.attack * a.sampleRate)), cr = Math.exp(-1 / (o.release * a.sampleRate)), hold = Math.round(o.hold * a.sampleRate);
+    const g = new Float32Array(n); let open = false, cnt = 0, cur = floor;
+    for (let i = 0; i < n; i++) {
+      if (env[i] > th) { open = true; cnt = hold; } else if (open && env[i] < lo) { if (cnt > 0) cnt--; else open = false; }
+      const tgt = open ? 1 : floor; cur = tgt > cur ? ca * cur + (1 - ca) * tgt : cr * cur + (1 - cr) * tgt; g[i] = cur;
+    }
+    return map(a, c => { const r = new Float32Array(n); for (let i = 0; i < n; i++) r[i] = c[i] * g[i]; return r; });
+  }
+  /** De-esser: reduz só a faixa de sibilantes quando ela passa do limiar. {freq:6500, threshold:-30, ratio:4, q:1} */
+  function deesser(a, o) {
+    chk(a); o = Object.assign({ freq: 6500, threshold: -30, ratio: 4, q: 1 }, o);
+    const n = frames(a), k = biquad('bp', a.sampleRate, o.freq, o.q), bands = a.channels.map(c => runBiquad(c, k));
+    const side = audio(a.sampleRate, bands), env = envelope(side, 0.0005, 0.03), g = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const d = g2db(env[i]) - o.threshold; g[i] = d > 0 ? db2g(-d * (1 - 1 / o.ratio)) : 1; }
+    return map(a, (c, ci) => { const r = new Float32Array(n), b = bands[ci]; for (let i = 0; i < n; i++) r[i] = c[i] - b[i] * (1 - g[i]); return r; });
+  }
+  /** Auto-ducking: baixa `music` quando `voice` fala. Devolve a música tratada. {amount:-12, threshold:-40, attack:0.05, release:0.4} */
+  function duck(music, voice, o) {
+    chk(music); chk(voice); o = Object.assign({ amount: -12, threshold: -40, attack: 0.05, release: 0.4 }, o);
+    const v = voice.sampleRate === music.sampleRate ? voice : resample(voice, music.sampleRate), env = envelope(v, 0.01, 0.1), n = frames(music), th = db2g(o.threshold);
+    const ca = Math.exp(-1 / (o.attack * music.sampleRate)), cr = Math.exp(-1 / (o.release * music.sampleRate)), low = db2g(o.amount), g = new Float32Array(n); let cur = 1;
+    for (let i = 0; i < n; i++) { const tgt = i < env.length && env[i] > th ? low : 1; cur = tgt < cur ? ca * cur + (1 - ca) * tgt : cr * cur + (1 - cr) * tgt; g[i] = cur; }
+    return map(music, c => { const r = new Float32Array(n); for (let i = 0; i < n; i++) r[i] = c[i] * g[i]; return r; });
+  }
+
+  /* ================= restauração (STFT) ================= */
+  function stft(x, N, H, fn) {
+    const win = new Float32Array(N); for (let i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N);
+    const n = x.length, out = new Float32Array(n + N), nrm = new Float32Array(n + N), re = new Float32Array(N), im = new Float32Array(N), frames_ = Math.max(1, Math.ceil((n + N) / H));
+    for (let f = 0; f < frames_; f++) {
+      const s = f * H - N / 2 + H; // centrado
+      for (let i = 0; i < N; i++) { const j = s + i; re[i] = (j >= 0 && j < n ? x[j] : 0) * win[i]; im[i] = 0; }
+      fft(re, im, false); fn(re, im, f); fft(re, im, true);
+      for (let i = 0; i < N; i++) { const j = s + i; if (j >= 0 && j < n + N) { out[j] += re[i] * win[i]; nrm[j] += win[i] * win[i]; } }
+    }
+    const r = new Float32Array(n); for (let i = 0; i < n; i++) r[i] = nrm[i] > 1e-6 ? out[i] / nrm[i] : 0; return r;
+  }
+  const sizeFor = rate => (rate > 60000 ? 4096 : 2048);
+
+  /** Redução de ruído por subtração espectral. {reduction:12 dB, profile:[de, até] segundos de ruído puro (senão acha os trechos mais quietos), smooth:3} */
+  function denoise(a, o) {
+    chk(a); o = Object.assign({ reduction: 12, profile: null, smooth: 3 }, o);
+    const N = sizeFor(a.sampleRate), H = N / 4, bins = N / 2 + 1, floor = db2g(-clamp(o.reduction, 0, 60));
+    return map(a, c => {
+      // 1) perfil do ruído
+      const mags = [];
+      const prof = o.profile ? c.slice(clamp(Math.round(o.profile[0] * a.sampleRate), 0, c.length), clamp(Math.round(o.profile[1] * a.sampleRate), 0, c.length)) : c;
+      if (o.profile && prof.length < N) fail('Trecho de ruído curto demais (use ao menos ' + (N / a.sampleRate).toFixed(2) + ' s).');
+      const energies = [];
+      stft(prof, N, H, (re, im) => { const m = new Float32Array(bins); let e = 0; for (let k = 0; k < bins; k++) { m[k] = Math.hypot(re[k], im[k]); e += m[k] * m[k]; } mags.push(m); energies.push(e); });
+      let pick = mags;
+      if (!o.profile) { const ord = energies.map((e, i) => i).sort((x, y) => energies[x] - energies[y]); pick = ord.slice(0, Math.max(2, Math.floor(ord.length * 0.1))).map(i => mags[i]); }
+      const noise = new Float32Array(bins); pick.forEach(m => { for (let k = 0; k < bins; k++) noise[k] += m[k] / pick.length; });
+      // 2) subtração com suavização do ganho no tempo
+      const prev = new Float32Array(bins).fill(1), alpha = 1.5, sm = clamp(o.smooth, 0, 10), rho = sm / (sm + 1);
+      return stft(c, N, H, (re, im) => {
+        for (let k = 0; k < bins; k++) {
+          const m = Math.hypot(re[k], im[k]) + 1e-12; let g = Math.max(floor, 1 - alpha * noise[k] / m);
+          g = g < prev[k] ? g : rho * prev[k] + (1 - rho) * g; prev[k] = g;
+          re[k] *= g; im[k] *= g; if (k > 0 && k < N / 2) { re[N - k] *= g; im[N - k] *= g; }
+        }
+      });
+    });
+  }
+  /** Reduz a cauda de reverberação (atenuação espectral da energia tardia). {amount:0.6, tail:0.3 s} */
+  function dereverb(a, o) {
+    chk(a); o = Object.assign({ amount: 0.6, tail: 0.3 }, o);
+    const N = sizeFor(a.sampleRate), H = N / 4, bins = N / 2 + 1, D = Math.max(2, Math.round(o.tail * a.sampleRate / H)), decay = Math.exp(-6.9 * (D * H / a.sampleRate) / Math.max(0.1, o.tail * 2));
+    return map(a, c => {
+      const hist = [];
+      return stft(c, N, H, (re, im, f) => {
+        const p = new Float32Array(bins); for (let k = 0; k < bins; k++) p[k] = re[k] * re[k] + im[k] * im[k];
+        hist.push(p); const old = hist[f - D];
+        for (let k = 0; k < bins; k++) {
+          const late = old ? old[k] * decay : 0, g = Math.sqrt(Math.max(0.05, 1 - o.amount * late / (p[k] + 1e-12)));
+          re[k] *= g; im[k] *= g; if (k > 0 && k < N / 2) { re[N - k] *= g; im[N - k] *= g; }
+        }
+        if (hist.length > D + 2) hist[f - D - 1] = null;
+      });
+    });
+  }
+  /** Remove estalos (cliques). {sensitivity:8} maior = menos sensível. */
+  function declick(a, o) {
+    chk(a); o = Object.assign({ sensitivity: 8, maxLength: 0.002 }, o);
+    const maxRun = Math.max(2, Math.round(o.maxLength * a.sampleRate));
+    return map(a, c => {
+      const n = c.length, x = c.slice(), r = new Float32Array(n);
+      for (let i = 2; i < n; i++) r[i] = Math.abs(x[i] - 2 * x[i - 1] + x[i - 2]);
+      const W = Math.round(a.sampleRate * 0.01); let run = 0, i = 2;
+      const loc = new Float32Array(n); for (let j = 0; j < n; j++) { run += r[j]; if (j >= W) run -= r[j - W]; loc[j] = run / Math.min(j + 1, W); }
+      while (i < n - 2) {
+        if (r[i] > o.sensitivity * (loc[i] + 1e-4) && r[i] > 0.02) {
+          let s = i - 1, e = i + 1; while (e < n - 1 && e - s < maxRun && r[e + 1] > o.sensitivity * 0.5 * (loc[e] + 1e-4)) e++;
+          const y0 = x[Math.max(0, s - 1)], y1 = x[Math.min(n - 1, e + 1)], len = e + 2 - (s - 1);
+          for (let j = s; j <= e + 0; j++) x[j] = y0 + (y1 - y0) * (j - (s - 1)) / len;
+          i = e + 2;
+        } else i++;
+      }
+      return x;
+    });
+  }
+  /** Reconstrói picos cortados (clipping). {threshold: 0..1 (pico a partir do qual considera cortado; padrão = 0,99 do máximo)} */
+  function declip(a, o) {
+    chk(a); o = o || {};
+    return map(a, c => {
+      const n = c.length, x = c.slice(); let pk = 0; for (let i = 0; i < n; i++) pk = Math.max(pk, Math.abs(x[i]));
+      const th = o.threshold || pk * 0.99; if (pk < 0.05) return x;
+      let i = 0;
+      while (i < n) {
+        if (Math.abs(c[i]) >= th) {
+          const sg = c[i] > 0 ? 1 : -1; let j = i; while (j < n && Math.abs(c[j]) >= th && (c[j] > 0 ? 1 : -1) === sg) j++;
+          const len = j - i;
+          if (len >= 2 && len < 200 && i >= 2 && j < n - 1) {
+            const m0 = c[i - 1] - c[i - 2], m1 = c[j + 1] - c[j];  // inclinações de entrada e saída
+            const p0 = c[i - 1], p1 = c[j], T = len + 1;
+            for (let k = 1; k <= len; k++) {
+              const t = k / T, t2 = t * t, t3 = t2 * t;
+              const v = (2 * t3 - 3 * t2 + 1) * p0 + (t3 - 2 * t2 + t) * m0 * T + (-2 * t3 + 3 * t2) * p1 + (t3 - t2) * m1 * T;
+              // o trecho deve ir além do limiar; se a curva ficar abaixo, usa o limiar
+              x[i + k - 1] = sg > 0 ? Math.max(v, c[i + k - 1]) : Math.min(v, c[i + k - 1]);
+            }
+          }
+          i = j;
+        } else i++;
+      }
+      return x;
+    });
+  }
+
+  /* ================= análise ================= */
+  /** Quanto `other` deve atrasar (segundos, pode ser negativo) para casar com `ref`. Correlação cruzada por FFT. {max:60, rate:4000} */
+  function syncOffset(ref, other, o) {
+    chk(ref); chk(other); o = Object.assign({ max: 60, rate: 4000, span: 180 }, o);
+    const prep = a => {
+      const m = remix(a, 1), r = resample(m, o.rate).channels[0].slice(0, Math.round(o.span * o.rate));
+      const out = new Float32Array(r.length); let prev = 0; for (let i = 0; i < r.length; i++) { out[i] = r[i] - prev * 0.97; prev = r[i]; }  // realça o contorno
+      return out;
+    };
+    const x = prep(ref), y = prep(other); let N = 1; while (N < x.length + y.length) N <<= 1;
+    const ar = new Float32Array(N), ai = new Float32Array(N), br = new Float32Array(N), bi = new Float32Array(N);
+    ar.set(x); br.set(y); fft(ar, ai, false); fft(br, bi, false);
+    for (let k = 0; k < N; k++) { const re = ar[k] * br[k] + ai[k] * bi[k], im = ai[k] * br[k] - ar[k] * bi[k]; ar[k] = re; ai[k] = im; }  // A * conj(B)
+    fft(ar, ai, true);
+    const maxLag = Math.min(Math.round(o.max * o.rate), Math.min(x.length, y.length) - 1); let best = 0, bv = -Infinity, sum = 0, cnt = 0;
+    for (let l = -maxLag; l <= maxLag; l++) { const v = ar[(l + N) % N]; sum += Math.abs(v); cnt++; if (v > bv) { bv = v; best = l; } }
+    const ex = x.reduce((s, v) => s + v * v, 0), ey = y.reduce((s, v) => s + v * v, 0);
+    return { offset: best / o.rate, score: bv / (Math.sqrt(ex * ey) + 1e-12), confidence: bv / ((sum / cnt) + 1e-12) };
+  }
+  /** Frequência fundamental por quadro (autocorrelação normalizada). Devolve [{t, f0, clarity}] (f0 = 0 se sem tom). */
+  function detectF0(a, o) {
+    chk(a); o = Object.assign({ min: 70, max: 900, hop: 0.01, win: 0.04 }, o);
+    const m = remix(a, 1).channels[0], rate = a.sampleRate, W = Math.round(o.win * rate), H = Math.round(o.hop * rate), lo = Math.floor(rate / o.max), hi = Math.ceil(rate / o.min), out = [];
+    for (let s = 0; s + W + hi <= m.length; s += H) {
+      let e0 = 0; for (let i = 0; i < W; i++) e0 += m[s + i] * m[s + i];
+      let best = 0, bl = 0; const cors = new Float32Array(hi + 2);
+      if (e0 / W > 1e-6) {
+        for (let l = lo; l <= hi; l++) { let c = 0, e1 = 0; for (let i = 0; i < W; i++) { c += m[s + i] * m[s + i + l]; e1 += m[s + i + l] * m[s + i + l]; } cors[l] = c / Math.sqrt(e0 * e1 + 1e-12); }
+        // primeiro máximo local acima de 0,85 do melhor (evita oitava abaixo)
+        let mx = 0; for (let l = lo; l <= hi; l++) if (cors[l] > mx) mx = cors[l];
+        for (let l = lo + 1; l < hi; l++) if (cors[l] >= 0.9 * mx && cors[l] >= cors[l - 1] && cors[l] >= cors[l + 1]) { bl = l; best = cors[l]; break; }
+        if (bl) { const y0 = cors[bl - 1], y1 = cors[bl], y2 = cors[bl + 1], d = y0 - 2 * y1 + y2; if (d) bl += 0.5 * (y0 - y2) / d; }
+      }
+      out.push({ t: (s + W / 2) / rate, f0: bl && best > 0.6 ? rate / bl : 0, clarity: best });
+    }
+    return out;
+  }
+  const NOTAS = { C: 0, 'C#': 1, D: 2, 'D#': 3, E: 4, F: 5, 'F#': 6, G: 7, 'G#': 8, A: 9, 'A#': 10, B: 11 };
+  const ESCALAS = { cromatica: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], maior: [0, 2, 4, 5, 7, 9, 11], menor: [0, 2, 3, 5, 7, 8, 10], pentatonica: [0, 2, 4, 7, 9], blues: [0, 3, 5, 6, 7, 10] };
+  /** Correção de afinação: puxa cada trecho com tom para a nota da escala mais próxima. {root:'C', scale:'cromatica', strength:1, window:0.04} */
+  function pitchCorrect(a, o) {
+    chk(a); o = Object.assign({ root: 'C', scale: 'cromatica', strength: 1, speed: 0.05 }, o);
+    const steps = Array.isArray(o.scale) ? o.scale : ESCALAS[o.scale]; if (!steps) fail('Escala desconhecida: ' + o.scale);
+    const root = typeof o.root === 'number' ? o.root : NOTAS[String(o.root).toUpperCase()]; if (root == null) fail('Nota raiz inválida.');
+    const f0 = detectF0(a), rate = a.sampleRate, ratios = new Float32Array(f0.length).fill(1);
+    f0.forEach((p, i) => {
+      if (!p.f0) return; const midi = 69 + 12 * Math.log2(p.f0 / 440); let bestM = midi, bd = Infinity;
+      for (let m = Math.floor(midi) - 2; m <= Math.ceil(midi) + 2; m++) { if (steps.indexOf(((m - root) % 12 + 12) % 12) < 0) continue; const d = Math.abs(m - midi); if (d < bd) { bd = d; bestM = m; } }
+      ratios[i] = Math.pow(2, (bestM - midi) * clamp(o.strength, 0, 1) / 12);
+    });
+    // suaviza as razões entre quadros (mediana de 5) para evitar saltos
+    const sm = ratios.map((_, i) => { const w = []; for (let k = -2; k <= 2; k++) w.push(ratios[clamp(i + k, 0, ratios.length - 1)]); w.sort((x, y) => x - y); return w[2]; });
+    const hopS = Math.round(0.01 * rate);
+    return map(a, c => {
+      const n = c.length, out = new Float32Array(n), nr = new Float32Array(n);
+      let to = 0;
+      while (to < n) {
+        const fi = clamp(Math.floor(to / hopS), 0, f0.length - 1), p = f0[fi], voiced = !!(p && p.f0);
+        const P = voiced ? Math.max(8, Math.round(rate / p.f0)) : Math.round(0.01 * rate), r = voiced ? sm[fi] : 1, G = Math.round(P * Math.max(1, 1 / r));
+        let ta = to;
+        if (voiced && r !== 1) { let bv = -Infinity; for (let i = Math.max(0, to - (P >> 1)); i <= Math.min(n - 1, to + (P >> 1)); i++) if (c[i] > bv) { bv = c[i]; ta = i; } }
+        for (let j = 0; j < 2 * G; j++) {
+          const op = to - G + j, ip = ta - G + j; if (op < 0 || op >= n || ip < 0 || ip >= n) continue;
+          const w = 0.5 - 0.5 * Math.cos(2 * Math.PI * (j + 0.5) / (2 * G)); out[op] += c[ip] * w; nr[op] += w;
+        }
+        to += Math.max(1, Math.round(P / r));
+      }
+      for (let i = 0; i < n; i++) out[i] = nr[i] > 0.05 ? out[i] / nr[i] : c[i];
+      return out;
+    });
+  }
+
+  /* ================= mixagem ================= */
+  /** Automação: pontos [{t, v}] (segundos) → Float32Array de `n` amostras, interpolação 'linear' | 'step' | 'smooth'. Valores fora ficam no 1º/último ponto. */
+  function curve(points, rate, n, mode) {
+    const p = (points || []).slice().sort((x, y) => x.t - y.t), out = new Float32Array(n); if (!p.length) return out;
+    let k = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / rate; while (k < p.length - 1 && p[k + 1].t <= t) k++;
+      if (t <= p[0].t || k === p.length - 1) { out[i] = t <= p[0].t ? p[0].v : p[p.length - 1].v; continue; }
+      const a = p[k], b = p[k + 1]; let u = (t - a.t) / Math.max(1e-9, b.t - a.t);
+      if (mode === 'step') u = 0; else if (mode === 'smooth') u = u * u * (3 - 2 * u);
+      out[i] = a.v + (b.v - a.v) * u;
+    }
+    return out;
+  }
+
+  const plugins = {};
+  /** Registra um efeito próprio: fn(áudio, opções) → áudio. Fica disponível por nome em fx() e nas cadeias do mixdown. */
+  function register(name, fn) { if (typeof fn !== 'function') fail('O efeito deve ser uma função.'); plugins[name] = fn; }
+  const builtin = {
+    gain: (a, o) => A.gain(a, o.db || 0), compressor: (a, o) => A.compress(a, o), compress: (a, o) => A.compress(a, o),
+    eq: (a, o) => A.equalizer(a, o.gains || [], o.freqs), equalizer: (a, o) => A.equalizer(a, o.gains || [], o.freqs),
+    filter: (a, o) => A.filter(a, o.mode || 'lowpass', o.freq || 1000, o), reverb: (a, o) => A.reverb(a, o), echo: (a, o) => A.echo(a, o),
+    limiter, gate, deesser, denoise, dereverb, declick, declip, pitchCorrect, pitch: (a, o) => A.pitch(a, o.semitones || 0), stretch: (a, o) => A.stretch(a, o.factor || 1), normalizeLUFS: (a, o) => normalizeLUFS(a, o.target, o.ceiling)
+  };
+  /** Aplica um efeito pelo nome: R4.dsp.fx(a, 'compressor', {threshold:-20}) ou uma cadeia [{type, ...opções}]. */
+  function fx(a, type, opts) {
+    if (Array.isArray(type)) return type.reduce((r, e) => fx(r, e.type, e), a);
+    const f = plugins[type] || builtin[type]; if (!f) fail('Efeito desconhecido: ' + type);
+    return f(a, opts || {});
+  }
+  const effects = () => Object.keys(builtin).concat(Object.keys(plugins));
+
+  /**
+   * Mixagem offline. tracks: [{audio, offset:s, gain:dB, pan:-1..1, mute, solo, bus:'nome', fx:[...], sends:{retorno:dB},
+   *   automation:{gain:[{t,v dB}], pan:[{t,v}]}}]. buses: {nome:{gain:dB, fx:[...], bus:'outro'}}. returns: {nome:{fx:[...], gain:dB}}. master:{gain:dB, fx:[...]}.
+   * Opções: rate (padrão do 1º áudio), channels (2), duration (s, senão calcula). Devolve áudio estéreo.
+   */
+  function mixdown(project) {
+    project = project || {}; const tracks = project.tracks || []; if (!tracks.length) fail('Sem faixas para mixar.');
+    const rate = project.rate || tracks[0].audio.sampleRate, ch = project.channels || 2, solo = tracks.some(t => t.solo);
+    let dur = project.duration || 0;
+    tracks.forEach(t => { dur = Math.max(dur, (t.offset || 0) + C.duration(t.audio)); });
+    const n = Math.ceil(dur * rate) + 1, MAXN = 48000 * 3600 * 2; if (n > MAXN) fail('Projeto longo demais.');
+    const zero = () => audio(rate, Array.from({ length: ch }, () => new Float32Array(n)));
+    const buses = {}, rets = {}, getBus = nm => (buses[nm] || (buses[nm] = zero())), getRet = nm => (rets[nm] || (rets[nm] = zero()));
+    const addInto = (dst, src, off, k) => { for (let c = 0; c < ch; c++) { const d = dst.channels[c], s = src.channels[Math.min(c, src.channels.length - 1)]; for (let i = 0; i < s.length; i++) { const j = off + i; if (j >= n) break; d[j] += s[i] * (k ? k[i] || 0 : 1); } } };
+    const master = zero();
+    tracks.forEach(t => {
+      if (t.mute || (solo && !t.solo)) return;
+      let a = resample(t.audio, rate); if (t.fx && t.fx.length) a = fx(a, t.fx);
+      a = remix(a, 2); const m = frames(a), au = t.automation || {};
+      const gcurve = au.gain && au.gain.length ? curve(au.gain, rate, m, au.mode) : null, base = db2g(t.gain || 0);
+      const pcurve = au.pan && au.pan.length ? curve(au.pan, rate, m, au.mode) : null;
+      const L = new Float32Array(m), Rr = new Float32Array(m);
+      for (let i = 0; i < m; i++) {
+        const g = base * (gcurve ? db2g(gcurve[i]) : 1), p = clamp(pcurve ? pcurve[i] : (t.pan || 0), -1, 1), th = (p + 1) * Math.PI / 4;
+        L[i] = a.channels[0][i] * g * Math.cos(th) * Math.SQRT2; Rr[i] = a.channels[1][i] * g * Math.sin(th) * Math.SQRT2;
+      }
+      const st = audio(rate, [L, Rr]), off = Math.round((t.offset || 0) * rate);
+      addInto(t.bus ? getBus(t.bus) : master, st, off);
+      Object.keys(t.sends || {}).forEach(nm => addInto(getRet(nm), st, off, new Float32Array(m).fill(db2g(t.sends[nm]))));
+    });
+    const defs = project.buses || {}, order = Object.keys(buses);
+    order.forEach(nm => {
+      const d = defs[nm] || {}; let b = buses[nm]; if (d.fx && d.fx.length) b = fx(b, d.fx);
+      const k = db2g(d.gain || 0); addInto(d.bus && d.bus !== nm ? getBus(d.bus) : master, audio(rate, b.channels.map(c => c.map(v => v * k))), 0);
+    });
+    Object.keys(rets).forEach(nm => {
+      const d = (project.returns || {})[nm] || {}; let b = rets[nm]; if (d.fx && d.fx.length) b = fx(b, d.fx);
+      const k = db2g(d.gain || 0); addInto(master, audio(rate, b.channels.map(c => c.map(v => v * k))), 0);
+    });
+    let out = master; const mm = project.master || {};
+    if (mm.fx && mm.fx.length) out = fx(out, mm.fx);
+    if (mm.gain) { const k = db2g(mm.gain); out = map(out, c => c.map(v => v * k)); }
+    return out;
+  }
+
+  const api = { fft, lufs, truePeak, normalizeLUFS, limiter, gate, deesser, duck, denoise, dereverb, declick, declip, syncOffset, detectF0, pitchCorrect, curve, register, fx, effects, mixdown, SCALES: ESCALAS };
+  if (R4 && R4.module) R4.module('dsp', api, {
+    title: 'R4.dsp', group: 'Mídia',
+    description: 'Tratamento e mixagem de áudio sem bibliotecas: volume em LUFS, limitador, gate, de-esser, auto-ducking, redução de ruído, de-click, de-clip, sincronização por correlação, correção de afinação e mixer com buses, sends e automação.',
+    props: [
+      { name: 'lufs(a) / normalizeLUFS(a, alvo, teto)', type: '{integrated, shortTerm, momentary, range, truePeak}', desc: 'Medição BS.1770 / EBU R128 e normalização por volume percebido.' },
+      { name: 'limiter / gate / deesser / duck(música, voz)', type: 'áudio', desc: 'Dinâmica. Opções em dB e segundos.' },
+      { name: 'denoise / dereverb / declick / declip', type: 'áudio', desc: 'Restauração por espectro (FFT própria).' },
+      { name: 'syncOffset(ref, outro)', type: '{offset, score, confidence}', desc: 'Atraso (s) para casar um áudio externo com o do vídeo.' },
+      { name: 'detectF0 / pitchCorrect(a, {root, scale, strength})', type: 'análise / áudio', desc: 'Tom por quadro e correção de afinação por escala.' },
+      { name: 'mixdown({tracks, buses, returns, master})', type: 'áudio', desc: 'Mixer offline com pan, ganho, automação, buses, sends/returns e cadeia de efeitos.' },
+      { name: 'register(nome, fn) / fx(a, nome, opções)', type: 'plugins', desc: 'API de efeitos próprios (no lugar de VST/AU, que o navegador não carrega).' }
+    ]
+  });
+  if (R4) R4.dsp = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+})(typeof window !== 'undefined' ? window.R4 : undefined);

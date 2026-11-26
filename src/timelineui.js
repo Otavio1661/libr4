@@ -1,0 +1,1012 @@
+/**
+ * ============================================
+ * libr4 / timelineui.js  —  R4 dev
+ * ============================================
+ * Telas de edição sobre R4.timeline / R4.dsp / R4.gfx (sem bibliotecas):
+ *   <r4-timelineeditor>  editor completo: pré-visualização, faixas e clipes (arrastar, aparar), razor, ripple, inspetor
+ *                        (transformação, keyframes, velocidade, blend, efeitos, máscara, transição), mixer, scopes, legendas, EDL/XML, exportar
+ *   <r4-pianoroll>       piano roll: notas na grade, quantizar, tocar, MIDI (WebMIDI) e exportar .mid
+ * JS: R4.timelineeditor('#alvo', { width, height, fps, save: 'id' }), R4.pianoroll('#alvo', { notes })
+ * Atalhos do editor: Espaço tocar/pausar, S dividir, Delete apagar, Shift+Delete ripple, Ctrl+Z/Ctrl+Shift+Z, setas = quadro, M marcador, +/- zoom.
+ * Arquivos do usuário são dados não confiáveis: nomes só entram como texto, limites de tamanho.
+ * ============================================
+ */
+(function (R4) {
+  'use strict';
+  const { el, tx } = R4.util, T = R4.util.T;
+  const TL = () => R4.timeline || (() => { throw new Error('Módulo R4.timeline não carregado.'); })();
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  const TT = (k, d, a) => T('r4.timelineeditor.' + k, a, d);
+  const shown = n => (R4.sanitize ? R4.sanitize.filename(n) : String(n == null ? '' : n));
+  const MB = 1048576;
+  const btn = (key, fb, primary, cls) => { const b = el('button', { type: 'button', class: 'r4-btn r4-md-btn r4-tl-btn ' + (primary ? 'r4-btn-primary ' : '') + (cls || '') }); tx(b, 'r4.timelineeditor.' + key, fb); return b; };
+  const sel = (items, label) => { const s = el('select', { class: 'r4-md-sel r4-tl-sel' }); items.forEach(i => s.append(el('option', { value: String(i[0]), text: i[1] }))); if (label) tx(s, 'r4.timelineeditor.' + label[0], label[1], 'aria-label'); return s; };
+  const fmtTC = (t, fps) => TL().tc(t, fps);
+  const download = (blob, name) => { const a = el('a', { href: URL.createObjectURL(blob), download: name }); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); };
+  const dl = (text, name, type) => download(new Blob([text], { type: type || 'text/plain' }), name);
+  const KIND_BY_TYPE = f => (/^video\//.test(f.type) ? 'video' : /^audio\//.test(f.type) ? 'audio' : /^image\//.test(f.type) ? 'image' : /\.(mp4|mov|m4v|webm|mkv)$/i.test(f.name) ? 'video' : /\.(wav|mp3|flac|ogg|opus|m4a|aac|aif|aiff)$/i.test(f.name) ? 'audio' : /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name) ? 'image' : '');
+
+  /* biblioteca do editor: textos novos (pt-BR, en) */
+  const S = {
+    full: ['Tela cheia', 'Full screen'], fullOff: ['Sair da tela cheia', 'Exit full screen'], exportShow: ['Exportar', 'Export'], dup2: ['Duplicar', 'Duplicate'], fit: ['Ajustar', 'Fit'], zoom: ['Zoom da linha do tempo', 'Timeline zoom'],
+    crop: ['Cortar', 'Crop'], cropDone: ['Concluir corte', 'Finish crop'], chromaBtn: ['Chroma key', 'Chroma key'], noAudioTrack: ['Este vídeo não tem áudio para levar à faixa de áudio.', 'This video has no audio to move to the audio track.'], audioSplit: ['Áudio separado do vídeo na faixa de áudio (o vídeo ficou mudo).', 'Audio split from the video onto the audio track (the video is now muted).'], wrongLane: ['Este tipo de clipe não cabe nessa faixa.', 'This clip type does not fit that track.'],
+    secCrop: ['Recorte (o que aparece)', 'Crop (what is visible)'], cropL: ['Esquerda', 'Left'], cropT: ['Topo', 'Top'], cropR: ['Direita', 'Right'], cropB: ['Base', 'Bottom'], cropReset: ['Restaurar recorte', 'Reset crop'], cropOn: ['Cortar na tela', 'Crop on screen'],
+    secChroma: ['Chroma key (fundo verde ou azul)', 'Chroma key (green or blue screen)'], chromaOn: ['Ativar chroma key', 'Enable chroma key'], chromaOff: ['Remover chroma key', 'Remove chroma key'], picker: ['Conta-gotas (clique no vídeo)', 'Eyedropper (click the video)'], pickHint: ['Clique na cor do fundo no vídeo. Esc cancela.', 'Click the background color in the video. Esc cancels.'], keyGreen: ['Verde', 'Green'], keyBlue: ['Azul', 'Blue'], tolerance: ['Tolerância', 'Tolerance'], softness: ['Suavidade da borda', 'Edge softness'], spill: ['Remover reflexo da cor', 'Spill removal'],
+    hOv: ['Alça de edição na tela', 'On-screen edit handle'], ovBody: ['Mover o clipe na tela: setas movem, + e - mudam o tamanho', 'Move the clip on screen: arrows move, + and - resize'],
+    lib_media: ['Mídia', 'Media'], lib_text: ['Texto', 'Text'], lib_shape: ['Formas', 'Shapes'], lib_fx: ['Filtros', 'Filters'], lib_tr: ['Transições', 'Transitions'], lib_audio: ['Áudio', 'Audio'],
+    emptyMedia: ['Nenhuma mídia ainda. Importe ou arraste arquivos para a linha do tempo.', 'No media yet. Import or drop files onto the timeline.'],
+    howAdd: ['Clique para adicionar no cursor.', 'Click to add at the playhead.'],
+    needClip: ['Selecione um clipe de vídeo ou imagem na linha do tempo.', 'Select a video or image clip on the timeline.'],
+    fxNoSel: ['Sem clipe selecionado, o filtro vira uma camada de ajuste sobre tudo.', 'With no clip selected, the filter becomes an adjustment layer over everything.'],
+    fxRemove: ['Remover filtros', 'Remove filters'], trIn: ['Entrada', 'In'], trOut: ['Saída', 'Out'], trBoth: ['Entrada e saída', 'In and out'], trRemove: ['Remover transições', 'Remove transitions'],
+    aInst: ['Instrumento', 'Instrument'], aStyle: ['Estilo', 'Style'], aBars: ['Compassos', 'Bars'], aBpm: ['Andamento', 'Tempo'], aGen: ['Gerar e adicionar', 'Generate and add'],
+    st_chords: ['Acordes', 'Chords'], st_arp: ['Arpejo', 'Arpeggio'], st_beat: ['Batida (bateria)', 'Beat (drums)'], aMade: ['Trilha gerada e adicionada.', 'Track generated and added.'],
+    aHint: ['Cria uma trilha com o sintetizador próprio e coloca na faixa de áudio, no ponto do cursor.', 'Builds a track with the built-in synth and places it on the audio track at the playhead.'],
+    copied: ['Clipe copiado.', 'Clip copied.'], prevHint: ['Arraste na prévia para mover o clipe; a roda do mouse muda a escala.', 'Drag on the preview to move the clip; the mouse wheel scales it.']
+  };
+  const LT = k => TT(k, S[k][0]);
+  const bt = (k, primary, cls) => btn(k, S[k][0], primary, cls);
+  const LIBS = ['media', 'text', 'shape', 'fx', 'tr', 'audio'];
+  const TEXTS = [
+    ['title', 'Título', 'Title', { size: 0.09, color: '#ffffff', weight: 800, anim: { type: 'fade', dur: 0.5 } }, { y: 0.5 }, 'font-size:1.3em;font-weight:800'],
+    ['subtitle', 'Subtítulo', 'Subtitle', { size: 0.05, color: '#e5e7eb', weight: 600, anim: { type: 'fade', dur: 0.4 } }, { y: 0.62 }, 'font-weight:600'],
+    ['caption', 'Legenda', 'Caption', { size: 0.045, color: '#ffffff', bg: 'rgba(0,0,0,0.65)', weight: 600 }, { y: 0.88 }, 'background:#000a;padding:0 4px'],
+    ['lower', 'Lower third', 'Lower third', { size: 0.05, color: '#ffffff', bg: 'rgba(0,0,0,0.6)', align: 'left', weight: 700, anim: { type: 'slideUp', dur: 0.5 } }, { x: 0.25, y: 0.85 }, 'background:#0009;padding:0 4px'],
+    ['pop', 'Destaque', 'Pop', { size: 0.1, color: '#ffe066', weight: 900, anim: { type: 'pop', dur: 0.4 } }, { y: 0.5 }, 'color:#ffe066;font-weight:900;font-size:1.3em'],
+    ['type', 'Máquina de escrever', 'Typewriter', { size: 0.06, color: '#ffffff', weight: 600, anim: { type: 'typewriter', dur: 1.5 } }, { y: 0.5 }, 'font-family:monospace'],
+    ['badge', 'Etiqueta', 'Badge', { size: 0.06, color: '#111111', bg: '#ffe066', weight: 800, anim: { type: 'pop', dur: 0.3 } }, { y: 0.5 }, 'color:#111;background:#ffe066;padding:0 4px;font-weight:800'],
+    ['alert', 'Alerta', 'Alert', { size: 0.06, color: '#ffffff', bg: '#d6336c', weight: 800, anim: { type: 'slideUp', dur: 0.4 } }, { y: 0.15 }, 'background:#d6336c;padding:0 4px;font-weight:800']
+  ];
+  const SHAPES = [
+    ['rectW', 'Retângulo branco', 'White rectangle', { kind: 'rect', w: 0.3, h: 0.3, fill: '#ffffff' }, {}, '#ffffff'], ['rectK', 'Retângulo preto', 'Black rectangle', { kind: 'rect', w: 0.3, h: 0.3, fill: '#000000' }, {}, '#000000'],
+    ['rectR', 'Retângulo vermelho', 'Red rectangle', { kind: 'rect', w: 0.3, h: 0.3, fill: '#e03131' }, {}, '#e03131'], ['rectY', 'Retângulo amarelo', 'Yellow rectangle', { kind: 'rect', w: 0.3, h: 0.3, fill: '#ffd43b' }, {}, '#ffd43b'],
+    ['ellW', 'Círculo branco', 'White circle', { kind: 'ellipse', w: 0.25, h: 0.25, fill: '#ffffff' }, {}, '#ffffff', true], ['ellB', 'Círculo azul', 'Blue circle', { kind: 'ellipse', w: 0.25, h: 0.25, fill: '#228be6' }, {}, '#228be6', true],
+    ['ellG', 'Círculo verde', 'Green circle', { kind: 'ellipse', w: 0.25, h: 0.25, fill: '#40c057' }, {}, '#40c057', true], ['bar', 'Barra inferior', 'Bottom bar', { kind: 'rect', w: 1, h: 0.14, fill: '#000000' }, { y: 0.93 }, '#000000'],
+    ['topbar', 'Tarja superior', 'Top bar', { kind: 'rect', w: 1, h: 0.1, fill: '#000000' }, { y: 0.05 }, '#000000']
+  ];
+  const FILTERS = [
+    ['gray', 'Preto e branco', 'Black and white', [{ type: 'gray' }], 'grayscale(1)'],
+    ['sepia', 'Sépia', 'Sepia', [{ type: 'grade', exposure: 0, contrast: 1, saturation: 0.55, temperature: 0.55, tint: 0 }], 'sepia(.85)'],
+    ['vivid', 'Vívido', 'Vivid', [{ type: 'grade', exposure: 0, contrast: 1.12, saturation: 1.5, temperature: 0, tint: 0 }], 'saturate(1.6) contrast(1.1)'],
+    ['cool', 'Frio', 'Cool', [{ type: 'grade', exposure: 0, contrast: 1.05, saturation: 1.05, temperature: -0.4, tint: 0 }], 'hue-rotate(18deg) saturate(1.1)'],
+    ['warm', 'Quente', 'Warm', [{ type: 'grade', exposure: 0.05, contrast: 1.05, saturation: 1.15, temperature: 0.4, tint: 0 }], 'sepia(.3) saturate(1.3)'],
+    ['cinema', 'Cinema', 'Cinema', [{ type: 'grade', exposure: -0.1, contrast: 1.2, saturation: 0.85, temperature: -0.1, tint: 0 }, { type: 'vignette', amount: 0.45, size: 0.55 }], 'contrast(1.2) saturate(.85) brightness(.92)'],
+    ['vintage', 'Antigo', 'Vintage', [{ type: 'grade', exposure: 0, contrast: 0.92, saturation: 0.7, temperature: 0.3, tint: 0 }, { type: 'grain', amount: 0.12 }, { type: 'vignette', amount: 0.5, size: 0.5 }], 'sepia(.5) contrast(.9)'],
+    ['soft', 'Suave', 'Soft', [{ type: 'blur', radius: 2 }, { type: 'grade', exposure: 0.1, contrast: 0.95, saturation: 1.05, temperature: 0, tint: 0 }], 'blur(1.5px) brightness(1.08)'],
+    ['sharp', 'Nítido', 'Sharp', [{ type: 'sharpen', amount: 0.9 }], 'contrast(1.1)'],
+    ['pixel', 'Pixelado', 'Pixelated', [{ type: 'pixelate', size: 12 }], 'contrast(1.3)'],
+    ['noir', 'Noir', 'Noir', [{ type: 'gray' }, { type: 'grade', exposure: -0.1, contrast: 1.5, saturation: 1, temperature: 0, tint: 0 }, { type: 'vignette', amount: 0.6, size: 0.5 }], 'grayscale(1) contrast(1.5)'],
+    ['invert', 'Invertido', 'Inverted', [{ type: 'invert' }], 'invert(1)']
+  ];
+  const TRANS = [['crossfade', 'Dissolver', 'Dissolve'], ['fade', 'Fade', 'Fade'], ['wipe', 'Cortina', 'Wipe'], ['slide', 'Deslizar', 'Slide'], ['zoom', 'Zoom', 'Zoom']];
+  const STYLES = ['chords', 'arp', 'beat'];
+  const SPT = {}, SEN = {};
+  for (const k of Object.keys(S)) { SPT[k] = S[k][0]; SEN[k] = S[k][1]; }
+  for (const L of [TEXTS, SHAPES, FILTERS, TRANS]) for (const p of L) { SPT['p_' + p[0]] = p[1]; SEN['p_' + p[0]] = p[2]; }
+  const PRT = p => TT('p_' + p[0], p[1]);
+
+  R4.define('timelineeditor', {
+    config: { width: 1280, height: 720, fps: 30, save: '', pps: 80, previewWidth: 640, project: null },
+    build() {
+      if (!R4.timeline) throw new Error('Módulo R4.timeline não carregado (timelineeditor).');
+      this._offs = []; this._thumbs = {}; this._peaks = {}; this._clipboard = null; this._isFull = false; this._libK = 'media'; this._sel = null; this._pps = clamp(+this.pps || 80, 10, 600); this._snap = true; this._busy = null;
+      this.T = this.project && this.project.project ? this.project : R4.timeline.create({ width: +this.width, height: +this.height, fps: +this.fps });
+      if (!this.T.project.tracks.length) { this.T.addTrack('video', 'V1'); this.T.addTrack('video', 'V2'); this.T.addTrack('audio', 'A1'); }
+      /* pré-visualização */
+      this.cv = el('canvas', { class: 'r4-tl-cv', width: +this.previewWidth, height: Math.round(+this.previewWidth * this.T.project.height / this.T.project.width) });
+      tx(this.cv, 'r4.timelineeditor.preview', 'Pré-visualização do projeto', 'aria-label');
+      this.tcEl = el('output', { class: 'r4-tl-tc', 'aria-live': 'off', text: '00:00:00:00' });
+      this.bPlay = btn('play', 'Tocar', true); this.bSplit = btn('split', 'Dividir'); this.bDel = btn('del', 'Apagar'); this.bRip = btn('ripple', 'Apagar e fechar');
+      this.bUndo = btn('undo', 'Desfazer'); this.bRedo = btn('redo', 'Refazer'); this.bMark = btn('marker', 'Marcador'); this.bCrop = bt('crop'); this.bCrop.setAttribute('aria-pressed', 'false'); this.bChroma = bt('chromaBtn');
+      this.bZin = btn('zoomIn', 'Zoom +'); this.bZout = btn('zoomOut', 'Zoom -');
+      this.bFull = bt('full'); this.bFull.setAttribute('aria-pressed', 'false'); this.bExpShow = bt('exportShow'); this.bExpShow.setAttribute('aria-pressed', 'false'); this.bDup = bt('dup2'); this.bFit = bt('fit');
+      this.zoomR = el('input', { type: 'range', class: 'r4-md-range r4-tl-zoom', min: '10', max: '400', step: '1', value: String(Math.round(this._pps)) }); tx(this.zoomR, 'r4.timelineeditor.zoom', S.zoom[0], 'aria-label');
+      this.libTabs = LIBS.map(k => { const b = bt('lib_' + k); b.addEventListener('click', () => this._libTab(k)); return b; });
+      this.libEl = el('div', { class: 'r4-tl-libbody' });
+      this.snapChk = el('input', { type: 'checkbox', class: 'r4-md-chk', checked: true }); const snapL = el('label', { class: 'r4-md-chkl' }, [this.snapChk, tx(el('span', { class: 'r4-md-lbl' }), 'r4.timelineeditor.snap', 'Imã')]);
+      this.addSel = sel([['', TT('add', 'Adicionar...')], ['video', TT('addV', 'Faixa de vídeo')], ['audio', TT('addA', 'Faixa de áudio')], ['text', TT('addText', 'Título')], ['lower', TT('addLower', 'Lower third')], ['rect', TT('addRect', 'Retângulo')], ['ellipse', TT('addEllipse', 'Elipse')], ['adjust', TT('addAdjust', 'Camada de ajuste')]], ['add', 'Adicionar']);
+      this.bMedia = btn('media', 'Importar mídia', true); this.fileIn = el('input', { type: 'file', accept: 'video/*,audio/*,image/*', multiple: true, hidden: true, tabindex: '-1' });
+      this.subIn = el('input', { type: 'file', accept: '.srt,.vtt,text/vtt,application/x-subrip', hidden: true, tabindex: '-1' });
+      this.xmlIn = el('input', { type: 'file', accept: '.edl,.xml', hidden: true, tabindex: '-1' });
+      this.fileMenu = sel([['', TT('file', 'Arquivo...')], ['srt', TT('exSrt', 'Exportar legendas SRT')], ['vtt', TT('exVtt', 'Exportar legendas VTT')], ['impSub', TT('impSub', 'Importar legendas SRT/VTT')], ['edl', TT('exEdl', 'Exportar EDL')], ['xml', TT('exXml', 'Exportar FCP XML')], ['impXml', TT('impXml', 'Importar EDL/XML (usa as mídias já importadas)')], ['json', TT('exJson', 'Salvar projeto (JSON)')], ['frame', TT('exFrame', 'Salvar quadro atual (PNG)')], ['proxy', TT('proxy', 'Gerar proxies de vídeo')]], ['file', 'Arquivo']);
+      /* faixas */
+      this.rulerEl = el('div', { class: 'r4-tl-ruler', role: 'slider', tabindex: '0', 'aria-valuemin': '0', 'aria-valuenow': '0' }); tx(this.rulerEl, 'r4.timelineeditor.ruler', 'Linha do tempo: use as setas para mover o cursor', 'aria-label');
+      this.lanesEl = el('div', { class: 'r4-tl-lanes' }); this.headEl = el('div', { class: 'r4-tl-grid' }, [this.rulerEl, this.lanesEl]);
+      this.playEl = el('div', { class: 'r4-tl-head', 'aria-hidden': 'true' });
+      this.scroll = el('div', { class: 'r4-tl-scroll', tabindex: '-1' }, [this.headEl, this.playEl]);
+      /* painéis */
+      this.insEl = el('div', { class: 'r4-tl-ins' }); this.mixEl = el('div', { class: 'r4-tl-mix' }); this.scopeEl = el('div', { class: 'r4-tl-scope' });
+      this.tabs = ['ins', 'mix', 'scope'].map(k => { const b = btn('tab_' + k, { ins: 'Inspetor', mix: 'Mixer', scope: 'Scopes' }[k]); b.addEventListener('click', () => this._tab(k)); return b; });
+      this.panel = el('div', { class: 'r4-tl-panel' }, [this.insEl, this.mixEl, this.scopeEl]);
+      this.status = el('div', { class: 'r4-md-info', role: 'status', 'aria-live': 'polite' }); this.msgEl = el('div', { class: 'r4-md-msg', role: 'alert', hidden: true });
+      /* exportar */
+      this.preset = sel([['youtube1080', 'MP4 1080p (H.264)'], ['youtube4k', 'MP4 4K'], ['shorts', 'MP4 vertical 1080x1920'], ['instagram', 'MP4 1080x1350'], ['web720', 'WebM 720p'], ['proxy', TT('pxy', 'Rascunho 360p')], ['mov', 'MOV 1080p'], ['mkv', 'MKV 1080p'], ['hevc', 'MP4 HEVC 1080p'], ['av1', 'MP4 AV1 1080p']], ['preset', 'Predefinição de exportação']);
+      this.lufsSel = sel([['', TT('noNorm', 'Sem normalizar')], ['-14', '-14 LUFS (streaming)'], ['-16', '-16 LUFS (web)'], ['-23', '-23 LUFS (TV)']], ['lufs', 'Volume final']);
+      this.rateSel = sel([['', TT('cbrNo', 'Taxa automática')], ['cbr', 'CBR'], ['vbr', 'VBR']], ['rate', 'Modo de taxa de bits']);
+      this.brIn = el('input', { type: 'number', class: 'r4-md-sel r4-tl-num', min: '0.2', max: '100', step: '0.1', placeholder: 'Mbps' }); tx(this.brIn, 'r4.timelineeditor.bitrate', 'Taxa de bits em Mbps (vazio = automática)', 'aria-label');
+      this.bExport = btn('export', 'Exportar vídeo', true); this.bCancel = btn('cancel', 'Cancelar'); this.bCancel.hidden = true; this.bQueue = btn('queue', 'Enviar para a fila');
+      this.prog = el('progress', { class: 'r4-md-prog', max: '1', value: '0', hidden: true }); tx(this.prog, 'r4.timelineeditor.progress', 'Progresso da exportação', 'aria-label');
+      this.resVid = el('video', { class: 'r4-md-video', controls: true, playsinline: true }); this.resLink = el('a', { class: 'r4-btn r4-btn-primary r4-md-btn', rel: 'noopener' }); this.resInfo = el('span', { class: 'r4-md-meta' });
+      this.resBox = el('div', { class: 'r4-md-result', hidden: true }, [el('div', { class: 'r4-md-stage r4-md-vstage' }, [this.resVid]), el('div', { class: 'r4-md-bar' }, [this.resLink, this.resInfo])]);
+      this._bind();
+      return el('div', { class: 'r4-md r4-tl', tabindex: '-1' }, [
+        el('div', { class: 'r4-md-bar r4-tl-topbar' }, [this.bMedia, this.bExpShow, this.bFull]),
+        el('div', { class: 'r4-tl-top' }, [
+          el('div', { class: 'r4-tl-lib' }, [el('div', { class: 'r4-md-bar r4-tl-libtabs' }, this.libTabs), this.libEl]),
+          el('div', { class: 'r4-tl-prev' }, [el('div', { class: 'r4-md-stage r4-md-vstage r4-tl-stage' }, [this._ovBuild()]), el('div', { class: 'r4-md-bar' }, [this.bPlay, this.tcEl, this.bUndo, this.bRedo, this.bCrop, this.bChroma])]),
+          el('div', { class: 'r4-tl-side' }, [el('div', { class: 'r4-md-bar r4-tl-tabs', role: 'tablist' }, this.tabs), this.panel])]),
+        el('div', { class: 'r4-md-bar r4-tl-tools' }, [this.bSplit, this.bDel, this.bRip, this.bDup, this.bMark, this.bZout, this.zoomR, this.bZin, this.bFit, snapL, this.addSel, this.fileMenu]),
+        this.scroll, this.status, this.msgEl,
+        (this.expBox = el('div', { class: 'r4-md-bar r4-tl-exp', hidden: true }, [this.preset, this.lufsSel, this.rateSel, this.brIn, this.bExport, this.bQueue, this.bCancel, this.prog])), this.resBox, this.fileIn, this.subIn, this.xmlIn]);
+    },
+    afterRender() {
+      this._on(this.el, 'keydown', this._keyFn);
+      this.player = R4.timeline.player(this.T, this.cv, { width: +this.previewWidth });
+      this.player.on('time', t => this._time(t)).on('state', p => { this.bPlay.textContent = p ? TT('pause', 'Pausar') : TT('play', 'Tocar'); }).on('error', e => this._msg(e.message)).on('end', () => this.fire('end', this));
+      this._offs.push(this.T.on(why => { this._draw(); this.player.refresh(); this.fire('change', this, this.T); this._btns(); if (why === 'undo' || why === 'redo' || why === 'set' || why === 'add' || why === 'remove' || why === 'key' || why === 'speed') this._tab(this._tabK); }));
+      if (this.save) {
+        R4.timeline.store.load(this.save).then(T2 => { if (this._destroyed || !T2) return; this._swap(T2); }).catch(() => {});
+        this._offAuto = R4.timeline.store.auto(this.save, this.T, { name: this.save, onSave: ts => { this.status.textContent = TT('saved', 'Salvo') + ' ' + new Date(ts).toLocaleTimeString(); }, onError: () => this._msg(TT('saveErr', 'Não foi possível salvar neste navegador.')) });
+      }
+      this._tab('ins'); this._libTab('media'); this._draw(); this._btns(); this._previewDrag(); this._on(this.bCrop, 'click', () => this._setCrop(!this._cropMode)); this._on(this.bChroma, 'click', () => this._guard(() => { const c = this._ovClip() || (this._sel && this.T.get(this._sel)); if (!c || (c.type !== 'video' && c.type !== 'image')) return; if (!(c.effects || []).some(e => e.type === 'chroma')) this.T.set(c.id, { effects: (c.effects || []).concat([{ type: 'chroma', color: '#00ff00', tolerance: 0.3, softness: 0.1, spill: 0.5 }]) }); this._tab('ins'); }));
+    },
+    _swap(T2) {
+      this._offAuto && this._offAuto(); this.player.destroy(); this.T = T2; this._sel = null; this.player = R4.timeline.player(this.T, this.cv, { width: +this.previewWidth });
+      this.player.on('time', t => this._time(t)).on('error', e => this._msg(e.message));
+      this._offs.push(this.T.on(why => { this._draw(); this.player.refresh(); this.fire('change', this, this.T); this._btns(); if (why === 'undo' || why === 'redo' || why === 'set' || why === 'add' || why === 'remove' || why === 'key' || why === 'speed') this._tab(this._tabK); }));
+      if (this.save) this._offAuto = R4.timeline.store.auto(this.save, this.T, { name: this.save });
+      this._draw(); this._btns();
+    },
+    _msg(m) { this.msgEl.textContent = m || ''; this.msgEl.hidden = !m; },
+    _tab(k) { this._tabK = k; this.insEl.hidden = k !== 'ins'; this.mixEl.hidden = k !== 'mix'; this.scopeEl.hidden = k !== 'scope'; this.tabs.forEach((b, i) => { const on = ['ins', 'mix', 'scope'][i] === k; b.setAttribute('aria-pressed', String(on)); b.classList.toggle('r4-tl-on', on); }); if (k === 'ins') this._inspector(); else if (k === 'mix') this._mixer(); else this._scopes(); },
+    _btns() { const T = this.T, has = !!this._sel; this.bUndo.disabled = !T.canUndo; this.bRedo.disabled = !T.canRedo; this.bDel.disabled = this.bRip.disabled = this.bDup.disabled = !has; this.bSplit.disabled = false; },
+    _time(t) { this._ovUpdate(); this.tcEl.textContent = fmtTC(t, this.T.project.fps); this.rulerEl.setAttribute('aria-valuenow', t.toFixed(2)); this.playEl.style.transform = 'translateX(' + (t * this._pps + 132) + 'px)'; if (this._tabK === 'scope' && !this._scopeBusy) this._scopes(true); },
+    get time() { return this.player ? this.player.time : 0; },
+    seek(t) { this.player.seek(t); return this; },
+    get(id) { return this.T.get(id); },
+    select(id) { this._sel = id; this._draw(); this._tab(this._tabK); this._btns(); this.fire('select', this, id); return this; },
+
+    /* ---------- faixas e clipes ---------- */
+    _draw() {
+      this._ovUpdate && this._ovUpdate();
+      const P = this.T.project, pps = this._pps, dur = Math.max(30, this.T.duration + 10);
+      this.headEl.style.width = (132 + dur * pps) + 'px';
+      this.rulerEl.replaceChildren();
+      const step = pps >= 200 ? 1 : pps >= 80 ? 5 : pps >= 30 ? 10 : 30;
+      for (let s = 0; s <= dur; s += step) this.rulerEl.append(el('span', { class: 'r4-tl-tick', style: { left: (132 + s * pps) + 'px' }, text: Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0') }));
+      for (const m of P.markers) { const mk = el('button', { type: 'button', class: 'r4-tl-mk', style: { left: (132 + m.t * pps) + 'px' }, title: m.name, 'aria-label': (m.name || TT('marker', 'Marcador')) + ' ' + m.t.toFixed(1) + ' s' }); mk.addEventListener('click', e => { e.stopPropagation(); this.player.seek(m.t); }); mk.addEventListener('dblclick', () => this.T.removeMarker(m.id)); this.rulerEl.append(mk); }
+      this.lanesEl.replaceChildren();
+      for (let i = P.tracks.length - 1; i >= 0; i--) this.lanesEl.append(this._lane(P.tracks[i]));
+      this._time(this.player ? this.player.time : 0);
+    },
+    _lane(tr) {
+      const T = this.T, h = el('div', { class: 'r4-tl-lh' }), area = el('div', { class: 'r4-tl-area', 'data-track': tr.id });
+      const mini = (key, fb, on, fn) => { const b = el('button', { type: 'button', class: 'r4-tl-mini' + (on ? ' r4-tl-on' : ''), 'aria-pressed': String(!!on) }); tx(b, 'r4.timelineeditor.' + key, fb, 'aria-label'); b.textContent = { mute: 'M', solo: 'S', lock: 'B' }[key]; b.addEventListener('click', () => fn()); return b; };
+      h.append(el('span', { class: 'r4-tl-lname', text: shown(tr.name) }), mini('mute', 'Silenciar faixa', tr.mute, () => T.setTrack(tr.id, { mute: !tr.mute })), mini('solo', 'Solo', tr.solo, () => T.setTrack(tr.id, { solo: !tr.solo })), mini('lock', 'Bloquear faixa', tr.locked, () => T.setTrack(tr.id, { locked: !tr.locked })));
+      area.style.width = (this.T.duration * this._pps + 600) + 'px';
+      for (const c of tr.clips) area.append(this._clip(c, tr));
+      area.addEventListener('pointerdown', e => { if (e.target === area) { this.select(null); this.player.seek(Math.max(0, (e.clientX - area.getBoundingClientRect().left) / this._pps)); } });
+      return el('div', { class: 'r4-tl-lane r4-tl-' + tr.kind + (tr.locked ? ' r4-tl-locked' : ''), role: 'group', 'aria-label': shown(tr.name) }, [h, area]);
+    },
+    _clip(c, tr) {
+      const pps = this._pps, a = this.T.project.assets[c.asset], name = c.type === 'text' ? (c.text && c.text.value) || '' : (a && a.name) || c.name || c.type;
+      const node = el('div', { class: 'r4-tl-clip r4-tl-c-' + c.type + (this._sel === c.id ? ' r4-tl-sel' : ''), role: 'button', tabindex: '0', 'data-id': c.id, 'aria-pressed': String(this._sel === c.id), 'aria-label': shown(name) + ', ' + c.start.toFixed(1) + ' s, ' + c.dur.toFixed(1) + ' s', style: { left: (c.start * pps) + 'px', width: Math.max(6, c.dur * pps) + 'px' } });
+      if (a && (c.type === 'video' || c.type === 'image')) this._thumb(a, node);
+      if (a && c.type === 'audio') this._wave(a, c, node);
+      node.append(el('span', { class: 'r4-tl-cn', text: shown(name) }));
+      if (c.reverse || (c.speed && c.speed !== 1) || c.ramp) node.append(el('span', { class: 'r4-tl-cb', text: (c.reverse ? '<' : '') + (c.speed && c.speed !== 1 ? c.speed.toFixed(2) + 'x' : '') }));
+      for (const k of ['transitionIn']) if (c[k]) node.append(el('span', { class: 'r4-tl-tr', style: { width: Math.min(c[k].dur * pps, c.dur * pps) + 'px' } }));
+      if (c.keys) for (const p of Object.keys(c.keys)) for (const k of c.keys[p]) node.append(el('i', { class: 'r4-tl-kf', style: { left: (k.t * pps) + 'px' } }));
+      const hl = el('span', { class: 'r4-tl-h r4-tl-hl', 'aria-hidden': 'true' }), hr = el('span', { class: 'r4-tl-h r4-tl-hr', 'aria-hidden': 'true' }); node.append(hl, hr);
+      node.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); this.select(c.id); } });
+      node.addEventListener('pointerdown', e => this._drag(e, c, tr, node, e.target === hl ? 'l' : e.target === hr ? 'r' : 'm'));
+      return node;
+    },
+    _snapT(t, skip) {
+      if (!this._snap) return t; const pts = this.T.snapPoints().concat([this.player.time]), lim = 8 / this._pps; let best = t, d = lim;
+      for (const p of pts) { if (skip && skip.includes(p)) continue; const k = Math.abs(p - t); if (k < d) { d = k; best = p; } }
+      return best;
+    },
+    _drag(e, c, tr, node, mode) {
+      if (e.button > 0 || tr.locked) { this.select(c.id); return; }
+      e.preventDefault(); e.stopPropagation(); this.select(c.id); node = this.scroll.querySelector('[data-id="' + c.id + '"]') || node;
+      const x0 = e.clientX, y0 = e.clientY, s0 = c.start, d0 = c.dur, pps = this._pps, own = [c.start, c.start + c.dur]; let moved = false, laneId = tr.id;
+      node.setPointerCapture && node.setPointerCapture(e.pointerId);
+      const mv = ev => {
+        const dx = (ev.clientX - x0) / pps; if (Math.abs(ev.clientX - x0) + Math.abs(ev.clientY - y0) > 3) moved = true; if (!moved) return;
+        if (mode === 'm') { let s = Math.max(0, this._snapT(s0 + dx, own)); const e2 = this._snapT(s + d0, own); if (Math.abs(e2 - (s + d0)) < Math.abs(this._snapT(s, own) - s)) s = Math.max(0, e2 - d0); node.style.left = (s * pps) + 'px'; node._s = s; const lane = document.elementFromPoint(ev.clientX, ev.clientY); const ar = lane && lane.closest && lane.closest('.r4-tl-area'); if (ar && ar.dataset.track) laneId = ar.dataset.track; }
+        else if (mode === 'l') { const s = clamp(this._snapT(s0 + dx, own), 0, s0 + d0 - 0.05); node.style.left = (s * pps) + 'px'; node.style.width = ((s0 + d0 - s) * pps) + 'px'; node._s = s; }
+        else { const en = Math.max(s0 + 0.05, this._snapT(s0 + d0 + dx, own)); node.style.width = ((en - s0) * pps) + 'px'; node._e = en; }
+      };
+      const up = () => {
+        node.removeEventListener('pointermove', mv); node.removeEventListener('pointerup', up); node.removeEventListener('pointercancel', up);
+        if (!moved) return;
+        try {
+          if (mode === 'm') {
+            const ns = node._s != null ? node._s : s0, dst = laneId !== tr.id ? this.T.project.tracks.find(x => x.id === laneId) : null;
+            if (dst && dst.kind === 'audio' && c.type === 'video') {
+              const a = c.asset && this.T.project.assets[c.asset];
+              if (!a || !a.hasAudio) { this._msg(TT('noAudioTrack', 'Este vídeo não tem áudio para levar à faixa de áudio.')); this._draw(); return; }
+              this.T.move(c.id, ns); this.T.set(c.id, { muted: true });
+              const cp = { type: 'audio', asset: c.asset, name: c.name, start: ns, dur: c.dur, in: c.in || 0 }; if (c.speed && c.speed !== 1) cp.speed = c.speed; if (c.volume != null) cp.volume = c.volume;
+              const id = this.T.addClip(laneId, cp); this.select(id); this._msg(TT('audioSplit', 'Áudio separado do vídeo na faixa de áudio (o vídeo ficou mudo).'));
+            } else {
+              if (dst && !this._compat(laneId, c)) this._msg(TT('wrongLane', 'Este tipo de clipe não cabe nessa faixa.'));
+              this.T.move(c.id, ns, laneId !== tr.id && this._compat(laneId, c) ? laneId : undefined);
+            }
+          }
+          else if (mode === 'l') this.T.trim(c.id, 'start', node._s);
+          else this.T.trim(c.id, 'end', node._e);
+        } catch (er) { this._msg(er.message); this._draw(); }
+      };
+      node.addEventListener('pointermove', mv); node.addEventListener('pointerup', up); node.addEventListener('pointercancel', up);
+    },
+    _compat(trackId, c) { const t = this.T.project.tracks.find(x => x.id === trackId); return !!t && (t.kind === 'audio' ? c.type === 'audio' : c.type !== 'audio'); },
+    _ensureTrack(kind) {
+      const P = this.T.project; const t = P.tracks.filter(x => x.kind === kind && !x.locked).pop();
+      return t ? t.id : this.T.addTrack(kind);
+    },
+    _freeTrack(kind, start, dur) {
+      const P = this.T.project, list = P.tracks.filter(x => x.kind === kind && !x.locked);
+      for (const tr of list) if (!tr.clips.some(c => c.start < start + dur - 1e-6 && c.start + c.dur > start + 1e-6)) return tr.id;
+      return this.T.addTrack(kind);
+    },
+    _insert(c, kind) { const id = this.T.addClip(this._freeTrack(kind || (c.type === 'audio' ? 'audio' : 'video'), c.start, c.dur), c); this.select(id); return id; },
+
+
+    /* ---------- tela cheia, ajuste, miniaturas ---------- */
+    _full(on) {
+      this._isFull = !!on; this.el.classList.toggle('r4-tl-full', this._isFull); document.documentElement.classList.toggle('r4-tl-lock', this._isFull);
+      this.bFull.setAttribute('aria-pressed', String(this._isFull)); this.bFull.textContent = this._isFull ? LT('fullOff') : LT('full'); this._draw();
+    },
+    _fit() { const w = this.scroll.clientWidth - 132 - 24, d = Math.max(1, this.T.duration); this._pps = clamp(w / d, 10, 600); this.zoomR.value = String(Math.min(400, Math.round(this._pps))); this._draw(); },
+    async _thumb(a, node) {
+      const cache = this._thumbs;
+      if (cache[a.id] === undefined) {
+        cache[a.id] = null;
+        try {
+          const b = a.kind === 'image' ? (a.src instanceof Blob ? a.src : null) : await R4.video.frame(a.src, Math.min(0.5, (a.duration || 1) / 2), { width: 160 });
+          if (b) cache[a.id] = URL.createObjectURL(b);
+        } catch (e) { /* sem miniatura */ }
+        if (this._destroyed) return; this._draw(); this._libRefresh && this._libRefresh();
+        return;
+      }
+      if (cache[a.id]) { node.style.backgroundImage = 'url(' + cache[a.id] + ')'; node.classList.add('r4-tl-thumb'); }
+    },
+    async _wave(a, c, node) {
+      const pk = this._peaks;
+      if (pk[a.id] === undefined) {
+        pk[a.id] = null;
+        try { const au = await R4.audio.decode(a.src); pk[a.id] = { p: R4.audio.peaks(au, 400), d: au.channels[0].length / au.sampleRate }; } catch (e) { /* sem forma de onda */ }
+        if (this._destroyed) return; this._draw(); return;
+      }
+      const w = pk[a.id]; if (!w) return;
+      const cv = el('canvas', { class: 'r4-tl-wave', 'aria-hidden': 'true', width: Math.min(2000, Math.max(8, Math.round(c.dur * this._pps))), height: 44 }), g = cv.getContext('2d');
+      g.fillStyle = 'rgba(255,255,255,.75)'; const n = w.p.length / 2, i0 = ((c.in || 0) / w.d) * n, i1 = i0 + ((c.dur * (c.speed || 1)) / w.d) * n;
+      for (let x = 0; x < cv.width; x++) { const i = Math.min(n - 1, Math.floor(i0 + (x / cv.width) * (i1 - i0))); if (i < 0) continue; const lo = w.p[i * 2], hi = w.p[i * 2 + 1]; g.fillRect(x, 22 - hi * 21, 1, Math.max(1, (hi - lo) * 21)); }
+      node.prepend(cv);
+    },
+
+    /* ---------- biblioteca ---------- */
+    _libTab(k) {
+      this._libK = k; this.libTabs.forEach((b, i) => { const on = LIBS[i] === k; b.setAttribute('aria-pressed', String(on)); b.classList.toggle('r4-tl-on', on); });
+      this._libRefresh = () => this._libTab(this._libK); const box = this.libEl; box.replaceChildren(); const grid = el('div', { class: 'r4-tl-cards' });
+      const card = (label, on, vis) => { const b = el('button', { type: 'button', class: 'r4-tl-card' }, [el('span', { class: 'r4-tl-cp' }, vis ? [vis] : []), el('span', { class: 'r4-tl-cl', text: label })]); b.addEventListener('click', () => this._guard(on)); grid.append(b); return b; };
+      const t = this.player ? this.player.time : 0, T = this.T;
+      if (k === 'media') {
+        box.append(el('div', { class: 'r4-md-bar' }, [(() => { const b = btn('media', 'Importar mídia', true); b.addEventListener('click', () => this.fileIn.click()); return b; })()]));
+        const as = Object.values(T.project.assets);
+        if (!as.length) box.append(el('p', { class: 'r4-md-hint', text: LT('emptyMedia') }));
+        for (const a of as) {
+          const th = this._thumbs[a.id], vis = el('span', { class: 'r4-tl-cpi', style: th ? { backgroundImage: 'url(' + th + ')' } : {}, text: th ? '' : (a.kind === 'audio' ? '♪' : '') });
+          card(shown(a.name), () => { const dur = a.kind === 'image' ? 5 : Math.max(0.1, a.duration || 1); this._insert({ type: a.kind, asset: a.id, start: this.player.time, dur, in: 0 }, a.kind === 'audio' ? 'audio' : 'video'); }, vis);
+          if (a.kind === 'video' && th === undefined) this._thumb(a, el('span'));
+        }
+      } else if (k === 'text') {
+        TEXTS.forEach(p => card(PRT(p), () => this._insert(Object.assign({ type: 'text', name: PRT(p), start: this.player.time, dur: 4, text: Object.assign({ value: PRT(p), align: 'center' }, p[3]) }, p[4]), 'video'), el('span', { class: 'r4-tl-cpt', style: p[5], text: 'Aa' })));
+      } else if (k === 'shape') {
+        SHAPES.forEach(p => card(PRT(p), () => this._insert(Object.assign({ type: 'shape', name: PRT(p), start: this.player.time, dur: 4, shape: Object.assign({}, p[3]) }, p[4]), 'video'), el('span', { class: 'r4-tl-cps' + (p[6] ? ' r4-tl-round' : ''), style: { background: p[5] } })));
+      } else if (k === 'fx') {
+        box.append(el('p', { class: 'r4-md-hint', text: this._sel ? LT('howAdd') : LT('fxNoSel') }));
+        FILTERS.forEach(p => card(PRT(p), () => this._applyFx(p), el('span', { class: 'r4-tl-cpi r4-tl-fxp', style: { filter: p[4] || 'none' }, text: 'Aa' })));
+        const rm = bt('fxRemove'); rm.addEventListener('click', () => this._guard(() => { if (this._sel) this.T.set(this._sel, { effects: [] }); })); box.append(grid, rm); return;
+      } else if (k === 'tr') {
+        box.append(el('p', { class: 'r4-md-hint', text: LT('needClip') }));
+        const mode = sel([['in', LT('trIn')], ['out', LT('trOut')], ['both', LT('trBoth')]], ['trMode', S.trBoth[0]]); this._trMode = this._trMode || 'both'; mode.value = this._trMode; mode.addEventListener('change', () => { this._trMode = mode.value; }); box.append(mode);
+        TRANS.forEach(p => card(PRT(p), () => this._applyTr(p[0], mode.value), el('span', { class: 'r4-tl-cpi r4-tl-trp', text: '▶' })));
+        const rm = bt('trRemove'); rm.addEventListener('click', () => this._guard(() => { if (this._sel) this.T.set(this._sel, { transitionIn: null, transitionOut: null }); })); box.append(grid, rm); return;
+      } else if (k === 'audio') { this._audioGen(box); return; }
+      box.append(grid);
+      if (k !== 'media') box.append(el('p', { class: 'r4-md-hint', text: LT('howAdd') }));
+    },
+    _applyFx(p) {
+      const T = this.T;
+      if (this._sel) { const c = T.get(this._sel); if (c.type === 'audio') throw new Error(LT('needClip')); T.set(c.id, { effects: p[3].map(e => Object.assign({}, e)) }); }
+      else this._insert({ type: 'adjust', name: PRT(p), start: this.player.time, dur: Math.max(1, T.duration - this.player.time || 5), effects: p[3].map(e => Object.assign({}, e)) }, 'video');
+    },
+    _applyTr(type, mode) {
+      if (!this._sel) throw new Error(LT('needClip'));
+      const c = this.T.get(this._sel), d = Math.min(0.5, c.dur / 2), o = {};
+      if (mode !== 'out') o.transitionIn = { type, dur: d, dir: 'left' }; if (mode !== 'in') o.transitionOut = { type, dur: d, dir: 'left' };
+      this.T.set(c.id, o);
+    },
+    _audioGen(box) {
+      if (!R4.music || !R4.audio) { box.append(el('p', { class: 'r4-md-hint', text: TT('noMusic', 'Módulos R4.music/R4.audio não carregados.') })); return; }
+      const inst = sel((R4.music.WAVES || []).map(w => [w, w]), ['aInst', S.aInst[0]]); inst.value = 'piano';
+      const st = sel(STYLES.map(x => [x, TT('st_' + x, S['st_' + x][0])]), ['aStyle', S.aStyle[0]]);
+      const bars = this._num(4, 1, 32, 1, () => {}, S.aBars[0]), bpm = this._num(110, 40, 220, 1, () => {}, S.aBpm[0]), go = bt('aGen', true);
+      go.addEventListener('click', () => this._guard(async () => {
+        go.disabled = true;
+        try {
+          const nb = clamp(Math.round(+bars.value) || 4, 1, 32), notes = [], prog = [['C3', 'maior'], ['A2', 'menor'], ['F2', 'maior'], ['G2', 'maior']];
+          for (let b = 0; b < nb; b++) {
+            const [root, kind] = prog[b % 4], ch = R4.music.chord(root, kind).map(n => n.midi != null ? n.midi : n);
+            if (st.value === 'chords') ch.forEach(m => notes.push({ note: m + 12, start: b * 4, dur: 3.8, vel: 0.7 }));
+            else if (st.value === 'arp') for (let i = 0; i < 16; i++) notes.push({ note: ch[i % ch.length] + 12 + (i % 8 > 3 ? 12 : 0), start: b * 4 + i * 0.25, dur: 0.25, vel: 0.7 });
+            else for (let i = 0; i < 8; i++) { if (i % 4 === 0) notes.push({ note: 36, start: b * 4 + i * 0.5, dur: 0.2, vel: 0.9 }); if (i % 4 === 2) notes.push({ note: 38, start: b * 4 + i * 0.5, dur: 0.2, vel: 0.8 }); notes.push({ note: 42, start: b * 4 + i * 0.5, dur: 0.1, vel: 0.5 }); }
+          }
+          const au = R4.music.render(notes, { bpm: +bpm.value || 110, wave: st.value === 'beat' ? 'drums' : inst.value }), blob = await R4.audio.encode(au, 'wav'), f = new File([blob], 'musica-' + (this.T.project.nextId || Date.now() % 1000) + '.wav', { type: 'audio/wav' });
+          const aid = this.T.addAsset({ kind: 'audio', name: f.name, src: f, duration: au.channels[0].length / au.sampleRate, hasAudio: true });
+          this._insert({ type: 'audio', asset: aid, start: this.player.time, dur: au.channels[0].length / au.sampleRate, in: 0 }, 'audio'); this.status.textContent = LT('aMade');
+        } finally { go.disabled = false; }
+      }));
+      box.append(el('p', { class: 'r4-md-hint', text: LT('aHint') }), this._field(S.aInst[0], inst), this._field(S.aStyle[0], st), this._field(S.aBars[0], bars), this._field(S.aBpm[0], bpm), el('div', { class: 'r4-md-bar' }, [go]));
+    },
+
+    /* ---------- arrastar na prévia ---------- */
+    _previewDrag() {
+      const cv = this.cv, on = (e, f) => this._on(cv, e, f);
+      on('pointerdown', ev => {
+        if (ev.button > 0 || !this._sel) return; let c; try { c = this.T.get(this._sel); } catch (e) { return; }
+        if (c.type === 'audio' || c.type === 'adjust' || (c.keys && (c.keys.x || c.keys.y))) return;
+        const r = cv.getBoundingClientRect(), x0 = ev.clientX, y0 = ev.clientY, X = c.x == null ? 0.5 : c.x, Y = c.y == null ? 0.5 : c.y; let nx = X, ny = Y, moved = false;
+        cv.setPointerCapture && cv.setPointerCapture(ev.pointerId); cv.classList.add('r4-tl-grab');
+        const mv = e2 => { moved = true; nx = clamp(X + (e2.clientX - x0) / r.width, -0.5, 1.5); ny = clamp(Y + (e2.clientY - y0) / r.height, -0.5, 1.5); c.x = nx; c.y = ny; this.player.refresh(); };
+        const up = () => { cv.removeEventListener('pointermove', mv); cv.removeEventListener('pointerup', up); cv.removeEventListener('pointercancel', up); cv.classList.remove('r4-tl-grab'); c.x = X; c.y = Y; if (moved) this._guard(() => this.T.set(c.id, { x: +nx.toFixed(4), y: +ny.toFixed(4) })); else this.player.refresh(); };
+        cv.addEventListener('pointermove', mv); cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
+      });
+      this._on(this.cvw, 'wheel', ev => {
+        if (!this._sel) return; let c; try { c = this.T.get(this._sel); } catch (e) { return; }
+        if (c.type === 'audio' || c.type === 'adjust' || (c.keys && c.keys.scale)) return;
+        ev.preventDefault(); this._guard(() => this.T.set(c.id, { scale: clamp((c.scale || 1) * (ev.deltaY < 0 ? 1.06 : 1 / 1.06), 0.05, 4) }));
+      });
+    },
+
+    /* ---------- edição direta na tela: mover, escalar, cortar, conta-gotas do chroma ---------- */
+    _ovBuild() {
+      const P = this.T.project, W = P.width, H = P.height;
+      this.cvw = el('div', { class: 'r4-tl-cvw' }, [this.cv]);
+      this.cvw.style.aspectRatio = W + ' / ' + H; this.cvw.style.setProperty('--r4-tl-ar', String(W / H));
+      this.ovc = el('div', { class: 'r4-tl-ovc', tabindex: '0', role: 'group' }); tx(this.ovc, 'r4.timelineeditor.ovBody', S.ovBody[0], 'aria-label');
+      this._hds = {};
+      for (const pos of ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']) {
+        const h = el('button', { type: 'button', class: 'r4-tl-hd r4-tl-hd-' + pos + (pos.length === 2 ? ' r4-tl-hd-c' : '') }); tx(h, 'r4.timelineeditor.hOv', S.hOv[0], 'aria-label');
+        this._hds[pos] = h; this.ovc.append(h);
+        this._on(h, 'pointerdown', ev => this._ovDrag(ev, pos));
+        this._on(h, 'keydown', ev => this._ovKey(ev, pos));
+      }
+      this._on(this.ovc, 'pointerdown', ev => { if (ev.target === this.ovc && !this._cropMode) this._ovDrag(ev, 'move'); });
+      this._on(this.ovc, 'keydown', ev => { if (ev.target === this.ovc) this._ovKey(ev, 'move'); });
+      this.ov = el('div', { class: 'r4-tl-ov', hidden: true }, [this.ovc]);
+      this.cvw.append(this.ov);
+      return this.cvw;
+    },
+    _ovGeom(c) {
+      const P = this.T.project, a = P.assets[c.asset]; if (!a || (c.type !== 'video' && c.type !== 'image')) return null;
+      const iw = a.width || P.width, ih = a.height || P.height, fit = c.fit || 'contain';
+      const k = fit === 'cover' ? Math.max(P.width / iw, P.height / ih) : fit === 'fill' ? 0 : Math.min(P.width / iw, P.height / ih);
+      const rw = fit === 'fill' ? P.width : iw * k, rh = fit === 'fill' ? P.height : ih * k;
+      const lt = Math.max(0, this.player.time - c.start), V = pr => R4.timeline.value(c, pr, lt), sc = V('scale');
+      return { rw, rh, x: V('x'), y: V('y'), sx: Math.abs(sc * V('scaleX')) || 0.01, sy: Math.abs(sc * V('scaleY')) || 0.01, rot: V('rotation') || 0, flip: !!c.flipX, P };
+    },
+    _ovClip() {
+      if (!this._sel) return null; let c; try { c = this.T.get(this._sel); } catch (e) { return null; }
+      const t = this.player ? this.player.time : 0; return t >= c.start && t < c.start + c.dur ? c : null;
+    },
+    _ovUpdate() {
+      if (!this.ov || !this.player) return; const c = this._ovClip(), g = c && this._ovGeom(c);
+      this.ov.hidden = !g; if (this.bCrop) { this.bCrop.disabled = !g; }
+      if (!g) { if (this._cropMode) this._setCrop(false); return; }
+      const st = this.ov.style, cr = c.crop || { x: 0, y: 0, w: 1, h: 1 };
+      st.left = (g.x * 100) + '%'; st.top = (g.y * 100) + '%'; st.width = (g.rw * g.sx / g.P.width * 100) + '%'; st.height = (g.rh * g.sy / g.P.height * 100) + '%';
+      st.transform = 'translate(-50%, -50%) rotate(' + g.rot + 'deg)' + (g.flip ? ' scaleX(-1)' : '');
+      const cs = this.ovc.style; cs.left = (cr.x * 100) + '%'; cs.top = (cr.y * 100) + '%'; cs.width = (cr.w * 100) + '%'; cs.height = (cr.h * 100) + '%';
+    },
+    _setCrop(on) {
+      this._cropMode = !!on; this.bCrop.setAttribute('aria-pressed', String(!!on)); this.bCrop.classList.toggle('r4-tl-on', !!on);
+      tx(this.bCrop, 'r4.timelineeditor.' + (on ? 'cropDone' : 'crop'), S[on ? 'cropDone' : 'crop'][0]); this.ov.classList.toggle('r4-tl-crop', !!on);
+      if (on) { const c = this._ovClip(); if (c && !c.crop) this._guard(() => this.T.set(c.id, { crop: { x: 0.05, y: 0.05, w: 0.9, h: 0.9 } })); }
+    },
+    _cropTo(cr, pos, fx, fy) {
+      const M = 0.02, r0 = cr.x + cr.w, b0 = cr.y + cr.h; let { x, y } = cr, r = r0, b = b0;
+      if (pos.includes('w')) x = clamp(cr.x + fx, 0, r0 - M);
+      if (pos.includes('e')) r = clamp(r0 + fx, cr.x + M, 1);
+      if (pos.includes('n')) y = clamp(cr.y + fy, 0, b0 - M);
+      if (pos.includes('s')) b = clamp(b0 + fy, cr.y + M, 1);
+      return { x: +x.toFixed(4), y: +y.toFixed(4), w: +(r - x).toFixed(4), h: +(b - y).toFixed(4) };
+    },
+    _cropCommit(c, cr) { const full = cr.x < 0.001 && cr.y < 0.001 && cr.w > 0.999 && cr.h > 0.999; this._guard(() => this.T.set(c.id, { crop: full ? null : cr })); },
+    _ovKey(ev, pos) {
+      const c = this._ovClip(); if (!c) return; const k = ev.key, st = ev.shiftKey ? 0.05 : 0.01, dir = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[k];
+      if (this._cropMode && pos !== 'move') {
+        if (!dir) return; ev.preventDefault(); this._cropCommit(c, this._cropTo(c.crop || { x: 0, y: 0, w: 1, h: 1 }, pos, dir[0] * st, dir[1] * st)); return;
+      }
+      const kp = c.keys || {};
+      if (pos === 'move' && dir) { if (kp.x || kp.y) return; ev.preventDefault(); const s5 = st / 2; this._guard(() => this.T.set(c.id, { x: +clamp((c.x == null ? 0.5 : c.x) + dir[0] * s5, -0.5, 1.5).toFixed(4), y: +clamp((c.y == null ? 0.5 : c.y) + dir[1] * s5, -0.5, 1.5).toFixed(4) })); return; }
+      if (k === '+' || k === '=' || k === '-') { if (kp.scale) return; ev.preventDefault(); this._guard(() => this.T.set(c.id, { scale: clamp((c.scale || 1) * (k === '-' ? 1 / 1.05 : 1.05), 0.05, 4) })); }
+    },
+    _ovDrag(ev, pos) {
+      if (ev.button > 0) return; const c = this._ovClip(), g = c && this._ovGeom(c); if (!g) return;
+      const kp = c.keys || {}; if ((pos === 'move' && (kp.x || kp.y)) || (pos !== 'move' && !this._cropMode && kp.scale)) return;
+      ev.preventDefault(); ev.stopPropagation();
+      const r = this.cv.getBoundingClientRect(), ox = ev.clientX, oy = ev.clientY, cx = r.left + g.x * r.width, cy = r.top + g.y * r.height, target = ev.currentTarget;
+      const cr0 = c.crop || { x: 0, y: 0, w: 1, h: 1 }, sc0 = c.scale == null ? 1 : c.scale, x0 = c.x, y0 = c.y, d0 = Math.max(8, Math.hypot(ox - cx, oy - cy));
+      const wpx = r.width * g.rw * g.sx / g.P.width, hpx = r.height * g.rh * g.sy / g.P.height, rad = g.rot * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad), fl = g.flip ? -1 : 1;
+      const orig = { x: c.x, y: c.y, scale: c.scale, crop: c.crop }; let patch = null; try { target.setPointerCapture(ev.pointerId); } catch (e) { /* ponteiro sintético */ }
+      this.cvw.classList.add('r4-tl-grab');
+      const mv = e2 => {
+        const dx = e2.clientX - ox, dy = e2.clientY - oy;
+        if (pos === 'move') {
+          let nx = clamp((x0 == null ? 0.5 : x0) + dx / r.width, -0.5, 1.5), ny = clamp((y0 == null ? 0.5 : y0) + dy / r.height, -0.5, 1.5);
+          if (Math.abs(nx - 0.5) < 0.012) nx = 0.5; if (Math.abs(ny - 0.5) < 0.012) ny = 0.5;
+          patch = { x: +nx.toFixed(4), y: +ny.toFixed(4) };
+        } else if (this._cropMode) {
+          const lx = (dx * cos + dy * sin) * fl, ly = -dx * sin + dy * cos; patch = { crop: this._cropTo(cr0, pos, lx / wpx, ly / hpx) };
+        } else patch = { scale: clamp(sc0 * Math.hypot(e2.clientX - cx, e2.clientY - cy) / d0, 0.05, 4) };
+        Object.assign(c, patch); this.player.refresh(); this._ovUpdate();
+      };
+      const up = () => {
+        target.removeEventListener('pointermove', mv); target.removeEventListener('pointerup', up); target.removeEventListener('pointercancel', up); this.cvw.classList.remove('r4-tl-grab');
+        if (!patch) return; const p = patch;
+        for (const k of Object.keys(p)) { if (orig[k] === undefined) delete c[k]; else c[k] = orig[k]; }
+        if ('crop' in p) this._cropCommit(c, p.crop); else this._guard(() => this.T.set(c.id, p));
+      };
+      target.addEventListener('pointermove', mv); target.addEventListener('pointerup', up); target.addEventListener('pointercancel', up);
+    },
+    /** Conta-gotas: desliga o chroma por um instante, lê a cor clicada no quadro e liga de novo. */
+    _pickChroma() {
+      const c = this._ovClip(); if (!c) return; const list = (c.effects || []).slice(), i = list.findIndex(e => e.type === 'chroma'); if (i < 0) return;
+      const was = !!list[i].off; list[i].off = true; c.effects = list; this.player.refresh(); this.cvw.classList.add('r4-tl-pick'); this._msg(TT('pickHint', S.pickHint[0]));
+      const end = () => { this.cvw.classList.remove('r4-tl-pick'); this.cvw.removeEventListener('pointerdown', pick, true); document.removeEventListener('keydown', esc, true); this._msg(''); };
+      const esc = e => { if (e.key === 'Escape') { end(); list[i].off = was; c.effects = list; this.player.refresh(); } };
+      const pick = e => {
+        e.preventDefault(); e.stopPropagation(); const r = this.cv.getBoundingClientRect(); end();
+        let hex = null; try { const x = Math.floor((e.clientX - r.left) * this.cv.width / r.width), y = Math.floor((e.clientY - r.top) * this.cv.height / r.height), d = this.cv.getContext('2d', { willReadFrequently: true }).getImageData(clamp(x, 0, this.cv.width - 1), clamp(y, 0, this.cv.height - 1), 1, 1).data; hex = '#' + [d[0], d[1], d[2]].map(v => v.toString(16).padStart(2, '0')).join(''); } catch (err) { /* canvas protegido */ }
+        const l = list.map(q => Object.assign({}, q)); l[i].off = was; if (hex) l[i].color = hex; this._guard(() => this.T.set(c.id, { effects: l }));
+      };
+      this.cvw.addEventListener('pointerdown', pick, true); document.addEventListener('keydown', esc, true);
+    },
+
+    /* ---------- importação ---------- */
+    async addFiles(files) {
+      this._msg(''); const T = this.T;
+      for (const f of files) {
+        try {
+          const kind = KIND_BY_TYPE(f); if (!kind) throw new Error(TT('badFile', 'Tipo de arquivo não suportado: ') + shown(f.name));
+          if (f.size > 1024 * MB) throw new Error(TT('tooBig', 'Arquivo grande demais: ') + shown(f.name));
+          let info = { duration: 0 };
+          if (kind === 'video') { info = await R4.video.probe(f); if (!info.hasVideo) throw new Error(TT('noVideo', 'O arquivo não tem vídeo: ') + shown(f.name)); }
+          else if (kind === 'audio') { const a = await R4.audio.decode(f); info = { duration: a.channels[0].length / a.sampleRate }; }
+          else { const bm = await createImageBitmap(f); info = { width: bm.width, height: bm.height }; bm.close(); }
+          const id = T.addAsset({ kind, name: shown(f.name), src: f, duration: info.duration, width: info.width, height: info.height, hasAudio: kind === 'video' ? info.hasAudio : kind === 'audio' });
+          const at = this.player.time, dur = kind === 'image' ? 5 : Math.max(0.1, info.duration);
+          this._insert({ type: kind, asset: id, start: at, dur, in: 0 }, kind === 'audio' ? 'audio' : 'video');
+          this._libRefresh && this._libRefresh(); this.fire('import', this, id);
+        } catch (e) { this._msg(e.message); this.fire('error', this, e.message, e.code); }
+      }
+      return this;
+    },
+    /* ---------- ações ---------- */
+    _on(t, e, f, o) { t.addEventListener(e, f, o); this._offs.push(() => t.removeEventListener(e, f, o)); },
+    _guard(fn) { try { this._msg(''); return fn(); } catch (e) { this._msg(e.message); this.fire('error', this, e.message, e.code); } },
+    _bind() {
+      const T = () => this.T, on = (t, e, f) => this._on(t, e, f);
+      on(this.bPlay, 'click', () => (this.player.playing ? this.player.pause() : this.player.play()));
+      on(this.bSplit, 'click', () => this._guard(() => { const t = this.player.time; if (this._sel) { const c = T().get(this._sel); if (t > c.start && t < c.start + c.dur) T().split(this._sel, t); else T().razor(t); } else T().razor(t); }));
+      on(this.bDel, 'click', () => this._guard(() => { const id = this._sel; this._sel = null; T().remove(id); }));
+      on(this.bRip, 'click', () => this._guard(() => { const id = this._sel; this._sel = null; T().rippleDelete(id); }));
+      on(this.bUndo, 'click', () => T().undo()); on(this.bRedo, 'click', () => T().redo());
+      on(this.bMark, 'click', () => T().addMarker(this.player.time, ''));
+      on(this.bZin, 'click', () => { this._pps = clamp(this._pps * 1.25, 10, 600); this.zoomR.value = String(Math.min(400, Math.round(this._pps))); this._draw(); });
+      on(this.bZout, 'click', () => { this._pps = clamp(this._pps / 1.25, 10, 600); this.zoomR.value = String(Math.min(400, Math.round(this._pps))); this._draw(); });
+      on(this.snapChk, 'change', () => { this._snap = this.snapChk.checked; });
+      on(this.bMedia, 'click', () => this.fileIn.click());
+      on(this.bFull, 'click', () => this._full(!this._isFull));
+      on(this.bExpShow, 'click', () => { this.expBox.hidden = !this.expBox.hidden; this.bExpShow.setAttribute('aria-pressed', String(!this.expBox.hidden)); });
+      on(this.bDup, 'click', () => this._guard(() => { if (this._sel) this.select(T().duplicate(this._sel)); }));
+      on(this.bFit, 'click', () => this._fit());
+      on(this.zoomR, 'input', () => { this._pps = clamp(+this.zoomR.value, 10, 600); this._draw(); });
+      on(this.scroll, 'wheel', ev => { if (!ev.ctrlKey) return; ev.preventDefault(); this._pps = clamp(this._pps * (ev.deltaY < 0 ? 1.15 : 1 / 1.15), 10, 600); this.zoomR.value = String(Math.min(400, Math.round(this._pps))); this._draw(); });
+      on(this.fileIn, 'change', () => { const f = Array.from(this.fileIn.files); this.fileIn.value = ''; this.addFiles(f); });
+      on(this.addSel, 'change', () => { const v = this.addSel.value; this.addSel.value = ''; this._guard(() => this._add(v)); });
+      on(this.fileMenu, 'change', () => { const v = this.fileMenu.value; this.fileMenu.value = ''; this._guard(() => this._file(v)); });
+      on(this.subIn, 'change', async () => { const f = this.subIn.files[0]; this.subIn.value = ''; if (!f) return; this._guard(async () => { if (f.size > 5 * MB) throw new Error(TT('tooBig', 'Arquivo grande demais: ') + shown(f.name)); const cues = R4.timeline.parseSubs(await f.text()); if (!cues.length) throw new Error(TT('noCues', 'Nenhuma legenda encontrada.')); T().addSubtitles(cues); }); });
+      on(this.xmlIn, 'change', async () => { const f = this.xmlIn.files[0]; this.xmlIn.value = ''; if (!f) return; this._guard(async () => { if (f.size > 20 * MB) throw new Error(TT('tooBig', 'Arquivo grande demais: ') + shown(f.name)); this._importEdl(f.name, await f.text()); }); });
+      const seekAt = ev => { const r = this.rulerEl.getBoundingClientRect(); this.player.seek(Math.max(0, (ev.clientX - r.left - 132) / this._pps)); };
+      on(this.rulerEl, 'pointerdown', ev => { if (ev.target !== this.rulerEl && ev.target.classList.contains('r4-tl-mk')) return; seekAt(ev); const mv = e2 => seekAt(e2), up = () => { this.rulerEl.removeEventListener('pointermove', mv); this.rulerEl.removeEventListener('pointerup', up); }; this.rulerEl.setPointerCapture && this.rulerEl.setPointerCapture(ev.pointerId); this.rulerEl.addEventListener('pointermove', mv); this.rulerEl.addEventListener('pointerup', up); });
+      on(this.rulerEl, 'keydown', ev => { const f = 1 / T().project.fps; if (ev.key === 'ArrowRight') { this.player.seek(this.player.time + f); ev.preventDefault(); } else if (ev.key === 'ArrowLeft') { this.player.seek(this.player.time - f); ev.preventDefault(); } });
+      on(this.scroll, 'dragover', ev => { ev.preventDefault(); });
+      on(this.scroll, 'drop', ev => { ev.preventDefault(); const f = Array.from((ev.dataTransfer && ev.dataTransfer.files) || []); if (f.length) this.addFiles(f); });
+      on(this.bExport, 'click', () => this.exportar().catch(() => {}));
+      on(this.bCancel, 'click', () => { if (this._abort) this._abort.abort(); });
+      on(this.bQueue, 'click', () => this._guard(() => this._enqueue()));
+      this._keyFn = ev => {
+        const tg = ev.target && ev.target.tagName; if (tg === 'INPUT' || tg === 'SELECT' || tg === 'TEXTAREA') return;
+        const k = ev.key, mod = ev.ctrlKey || ev.metaKey;
+        if (k === ' ' && tg !== 'BUTTON') { ev.preventDefault(); this.bPlay.click(); }
+        else if (mod && (k === 'z' || k === 'Z')) { ev.preventDefault(); ev.shiftKey ? T().redo() : T().undo(); }
+        else if (mod && (k === 'y' || k === 'Y')) { ev.preventDefault(); T().redo(); }
+        else if ((k === 's' || k === 'S') && !mod) { ev.preventDefault(); this.bSplit.click(); }
+        else if ((k === 'Delete' || k === 'Backspace') && this._sel) { ev.preventDefault(); (ev.shiftKey ? this.bRip : this.bDel).click(); }
+        else if (mod && (k === 'c' || k === 'C') && this._sel) { ev.preventDefault(); this._clipboard = JSON.parse(JSON.stringify(T().get(this._sel))); this.status.textContent = LT('copied'); }
+        else if (mod && (k === 'x' || k === 'X') && this._sel) { ev.preventDefault(); this._clipboard = JSON.parse(JSON.stringify(T().get(this._sel))); this.bDel.click(); }
+        else if (mod && (k === 'v' || k === 'V') && this._clipboard) { ev.preventDefault(); this._guard(() => { const c = this._clipboard, cp = Object.assign({}, c, { start: this.player.time }); delete cp.id; this._insert(cp, c.type === 'audio' ? 'audio' : 'video'); }); }
+        else if (mod && (k === 'd' || k === 'D') && this._sel) { ev.preventDefault(); this.bDup.click(); }
+        else if (k === 'Escape' && this._isFull) this._full(false);
+        else if ((k === 'm' || k === 'M') && !mod) { this.bMark.click(); }
+        else if (k === '+' || k === '=') this.bZin.click(); else if (k === '-') this.bZout.click();
+        else if (k === 'ArrowRight' && tg !== 'BUTTON') this.player.seek(this.player.time + 1 / T().project.fps);
+        else if (k === 'ArrowLeft' && tg !== 'BUTTON') this.player.seek(this.player.time - 1 / T().project.fps);
+        else if (k === 'Home') this.player.seek(0);
+      };
+    },
+    _add(v) {
+      const t = this.player.time, T = this.T;
+      if (v === 'video' || v === 'audio') { T.addTrack(v); return; }
+      if (v === 'text') this._insert({ type: 'text', name: TT('title', 'Título'), start: t, dur: 4, text: { value: TT('titleText', 'Seu título aqui'), size: 0.08, color: '#ffffff', align: 'center', weight: 700, anim: { type: 'fade', dur: 0.5 } }, y: 0.5 }, 'video');
+      else if (v === 'lower') this._insert({ type: 'text', name: 'Lower third', start: t, dur: 5, text: { value: TT('lowerText', 'Nome Sobrenome'), size: 0.05, color: '#ffffff', bg: 'rgba(0,0,0,0.6)', align: 'left', weight: 700, anim: { type: 'slideUp', dur: 0.5 } }, x: 0.25, y: 0.85 }, 'video');
+      else if (v === 'rect' || v === 'ellipse') this._insert({ type: 'shape', name: v, start: t, dur: 4, shape: { kind: v, w: 0.3, h: 0.3, fill: '#ffffff' } }, 'video');
+      else if (v === 'adjust') this._insert({ type: 'adjust', name: TT('addAdjust', 'Camada de ajuste'), start: t, dur: Math.max(1, T.duration - t || 5), effects: [{ type: 'grade', exposure: 0, contrast: 1, saturation: 1 }] }, 'video');
+    },
+    _importEdl(name, text) {
+      const T = this.T, assets = Object.values(T.project.assets), norm = s => String(s || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+      const find = n => { const k = norm(n); const a = assets.find(x => norm(x.name).startsWith(k) || k.startsWith(norm(x.name).slice(0, 8))); return a ? a.id : null; };
+      let n = 0;
+      if (/\.xml$/i.test(name)) {
+        const x = R4.timeline.fromXML(text);
+        for (const c of x.clips) { const a = assets.find(y => norm(y.name) === norm(c.name)) || assets.find(y => norm(y.name).startsWith(norm(c.name).slice(0, 8))); if (!a) continue; T.addClip(this._freeTrack(c.kind, c.start, c.dur), { type: c.kind, asset: a.id, start: c.start, dur: c.dur, in: c.in }); n++; }
+        for (const m of x.markers) T.addMarker(m.t, m.name);
+      } else {
+        const e = R4.timeline.fromEDL(text, T.project.fps);
+        for (const ev of e.events) { const id = find(ev.name); if (!id) continue; const dur = ev.recOut - ev.recIn, sp = dur > 0 ? (ev.srcOut - ev.srcIn) / dur : 1; T.addClip(this._freeTrack(ev.track, ev.recIn, dur), { type: ev.track, asset: id, start: ev.recIn, dur, in: ev.srcIn, speed: sp > 0 ? sp : 1 }); n++; }
+      }
+      this.status.textContent = TT('imported', '{n} clipes importados', { n }).replace('{n}', n);
+      if (!n) throw new Error(TT('noMatch', 'Nenhum clipe correspondeu às mídias importadas. Importe as mídias antes.'));
+    },
+    async _file(v) {
+      const T = this.T, name = (this.save || 'projeto');
+      if (v === 'srt') dl(R4.timeline.toSRT(T.subtitles()), name + '.srt', 'application/x-subrip');
+      else if (v === 'vtt') dl(R4.timeline.toVTT(T.subtitles()), name + '.vtt', 'text/vtt');
+      else if (v === 'edl') dl(T.toEDL(name), name + '.edl');
+      else if (v === 'xml') dl(T.toXML(name), name + '.xml', 'application/xml');
+      else if (v === 'json') dl(JSON.stringify(T.toJSON(), null, 1), name + '.json', 'application/json');
+      else if (v === 'impSub') this.subIn.click();
+      else if (v === 'impXml') this.xmlIn.click();
+      else if (v === 'frame') download(await R4.timeline.snapshot(T, this.player.time), name + '.png');
+      else if (v === 'proxy') {
+        const vids = Object.values(T.project.assets).filter(a => a.kind === 'video'); let i = 0;
+        for (const a of vids) { this.status.textContent = TT('proxying', 'Gerando proxy') + ' ' + (++i) + '/' + vids.length; await R4.timeline.makeProxy(T, a.id); }
+        this.status.textContent = TT('proxyDone', 'Proxies prontos: a pré-visualização fica mais leve. A exportação usa o original.');
+      }
+    },
+    _busyUI(on) { [this.bExport, this.bQueue].forEach(b => { b.disabled = on; }); this.bCancel.hidden = !on; this.prog.hidden = !on; if (on) this.prog.value = 0; },
+    _expOpts() {
+      const o = { preset: ['mov', 'mkv', 'hevc', 'av1'].includes(this.preset.value) ? 'youtube1080' : this.preset.value };
+      if (this.preset.value === 'mov') o.format = 'mov'; else if (this.preset.value === 'mkv') o.format = 'mkv'; else if (this.preset.value === 'hevc') o.codec = 'hevc'; else if (this.preset.value === 'av1') o.codec = 'av1';
+      if (this.lufsSel.value) o.lufs = +this.lufsSel.value;
+      const mbps = parseFloat(this.brIn.value); if (mbps > 0) o.bitrate = Math.round(mbps * 1e6);
+      if (this.rateSel.value) o.bitrateMode = this.rateSel.value === 'cbr' ? 'constant' : 'variable';
+      return o;
+    },
+    async exportar(opts) {
+      if (this._busy) return null; this._msg(''); this._hideResult();
+      this._abort = typeof AbortController === 'function' ? new AbortController() : null; this._busy = true; this._busyUI(true);
+      try {
+        const o = Object.assign(this._expOpts(), opts, { onProgress: p => { this.prog.value = p; }, signal: this._abort && this._abort.signal });
+        const r = await R4.timeline.exportVideo(this.T, o); if (this._destroyed) return null;
+        this._showResult(r); this.fire('done', this, r); return r;
+      } catch (e) { if (e && e.code !== 'abort') { this._msg(e.message); this.fire('error', this, e.message, e.code); } return null; }
+      finally { this._busy = false; if (!this._destroyed) this._busyUI(false); }
+    },
+    _showResult(r) {
+      this._hideResult(); const ext = (r.info && r.info.format) || (r.blob.type.split('/')[1] || 'mp4').replace(/;.*/, '');
+      this._url = URL.createObjectURL(r.blob); this.resVid.src = this._url; this.resLink.href = this._url; this.resLink.download = (this.save || 'projeto') + '.' + ext; this.resLink.textContent = TT('download', 'Baixar') + ' .' + ext;
+      this.resInfo.textContent = R4.util.bytes(r.blob.size) + (r.info && r.info.duration ? ' · ' + r.info.duration.toFixed(1) + ' s' : ''); this.resBox.hidden = false;
+    },
+    _hideResult() { this.resBox.hidden = true; if (this._url) { this.resVid.removeAttribute('src'); URL.revokeObjectURL(this._url); this._url = null; } },
+    _enqueue() {
+      if (!R4.queue) throw new Error(TT('noQueue', 'Módulo R4.queue não carregado.'));
+      const q = this._q = this._q || R4.queue.create({ concurrency: 1 }); const snap = R4.timeline.create(Object.assign({}, this.T.toJSON(), { assets: this.T.project.assets }));
+      const o = this._expOpts(); const id = q.add({ name: (this.save || 'projeto') + ' (' + this.preset.value + ')', kind: 'export', input: snap, options: o });
+      q.on('done', j => { if (j.id === id) { this.status.textContent = TT('queued', 'Fila: concluído') + ' ' + shown(j.name); this._showResult(j.result); } }).on('progress', j => { if (j.id === id) this.prog.hidden = false, this.prog.value = j.progress; }).on('error', j => { if (j.id === id) this._msg(j.error); });
+      this.status.textContent = TT('queuedAdd', 'Projeto enviado para a fila de renderização.');
+    },
+
+    /* ---------- painéis ---------- */
+    _field(label, input, extra) { return el('label', { class: 'r4-tl-f' }, [el('span', { class: 'r4-md-lbl', text: label }), input].concat(extra || [])); },
+    _num(v, min, max, step, onCommit, aria) { const i = el('input', { type: 'number', class: 'r4-md-sel r4-tl-num', min, max, step, value: String(v == null ? '' : +(+v).toFixed(3)) }); if (aria) i.setAttribute('aria-label', aria); i.addEventListener('change', () => { const n = parseFloat(i.value); if (isFinite(n)) this._guard(() => onCommit(clamp(n, min, max))); }); return i; },
+    _range(v, min, max, step, onCommit, aria) { const i = el('input', { type: 'range', class: 'r4-md-range', min, max, step, value: String(v) }); i.setAttribute('aria-label', aria); i.addEventListener('change', () => this._guard(() => onCommit(parseFloat(i.value)))); return i; },
+    _inspector() {
+      const box = this.insEl, T = this.T; box.replaceChildren();
+      let c = null; if (this._sel) { try { c = T.get(this._sel); } catch (e) { this._sel = null; } }
+      if (!c) { box.append(el('p', { class: 'r4-md-hint', text: TT('selectHint', 'Selecione um clipe para editar. Arraste para mover, as bordas para aparar. Espaço toca, S divide.') })); const P = T.project;
+        box.append(this._field(TT('bg', 'Cor de fundo'), (() => { const i = el('input', { type: 'color', class: 'r4-tl-color', value: /^#[0-9a-f]{6}$/i.test(P.background) ? P.background : '#000000' }); i.addEventListener('change', () => { P.background = i.value; T.tx('bg', () => { P.background = i.value; }); }); return i; })()));
+        return; }
+      const set = (p) => T.set(c.id, p), lt = Math.max(0, this.player.time - c.start), isMedia = c.type === 'video' || c.type === 'image';
+      const sec = (t, kids) => { const s = el('fieldset', { class: 'r4-tl-sec' }, [el('legend', { text: t })].concat(kids)); box.append(s); return s; };
+      const kfBtn = prop => { const b = btn('key', 'Keyframe'); b.classList.add('r4-tl-kfb'); b.addEventListener('click', () => this._guard(() => { T.setKey(c.id, prop, lt, R4.timeline.value(c, prop, lt)); })); return b; };
+      sec(TT('secClip', 'Clipe') + ': ' + shown(c.type), [
+        this._field(TT('start', 'Início (s)'), this._num(c.start, 0, 86400, 0.01, v => T.move(c.id, v), TT('start', 'Início'))),
+        this._field(TT('dur', 'Duração (s)'), this._num(c.dur, 0.05, 86400, 0.01, v => T.trim(c.id, 'end', c.start + v), TT('dur', 'Duração'))),
+        el('div', { class: 'r4-md-bar' }, [(() => { const b = btn('dup', 'Duplicar'); b.addEventListener('click', () => this._guard(() => { this.select(T.duplicate(c.id)); })); return b; })()])]);
+      if (c.type !== 'audio') {
+        const mk = (key, fb, prop, min, max, step) => this._field(TT(key, fb), el('div', { class: 'r4-tl-fr' }, [this._range(R4.timeline.value(c, prop, lt), min, max, step, v => { if (c.keys && c.keys[prop]) T.setKey(c.id, prop, lt, v); else set({ [prop]: v }); }, TT(key, fb)), kfBtn(prop)]));
+        sec(TT('secTf', 'Transformação'), [mk('posX', 'Posição X', 'x', -0.5, 1.5, 0.005), mk('posY', 'Posição Y', 'y', -0.5, 1.5, 0.005), mk('scale', 'Escala', 'scale', 0.05, 4, 0.01), mk('rot', 'Rotação', 'rotation', -180, 180, 1), mk('opacity', 'Opacidade', 'opacity', 0, 1, 0.01)]);
+        const bl = sel(Object.keys(R4.timeline.BLEND).map(k => [k, k]), ['blend', 'Modo de mistura']); bl.value = c.blend || 'normal'; bl.addEventListener('change', () => this._guard(() => set({ blend: bl.value })));
+        const sp = this._num(c.speed || 1, 0.05, 100, 0.05, v => T.setSpeed(c.id, v), TT('speed', 'Velocidade')), rv = el('input', { type: 'checkbox', class: 'r4-md-chk', checked: !!c.reverse }); rv.addEventListener('change', () => this._guard(() => T.setSpeed(c.id, c.speed || 1, rv.checked)));
+        const kids = [this._field(TT('blend', 'Mistura'), bl)]; if (c.type === 'video') kids.push(this._field(TT('speed', 'Velocidade (x)'), sp), el('label', { class: 'r4-md-chkl' }, [rv, el('span', { class: 'r4-md-lbl', text: TT('reverse', 'Reverso') })]));
+        sec(TT('secTime', 'Mistura e tempo'), kids);
+      }
+      if (c.type === 'video' || c.type === 'audio') sec(TT('secAudio', 'Áudio do clipe'), [
+        this._field(TT('volume', 'Volume'), this._range(c.volume == null ? 1 : c.volume, 0, 2, 0.01, v => set({ volume: v }), TT('volume', 'Volume'))),
+        this._field(TT('fadeIn', 'Fade-in (s)'), this._num(c.fadeIn || 0, 0, 30, 0.1, v => set({ fadeIn: v }), TT('fadeIn', 'Fade-in'))),
+        this._field(TT('fadeOut', 'Fade-out (s)'), this._num(c.fadeOut || 0, 0, 30, 0.1, v => set({ fadeOut: v }), TT('fadeOut', 'Fade-out')))]);
+      if (c.type === 'text') {
+        const tx0 = c.text || {}, upd = p => set({ text: Object.assign({}, tx0, p) });
+        const v = el('input', { type: 'text', class: 'r4-md-sel r4-tl-txt', maxlength: '300', value: tx0.value || '' }); v.setAttribute('aria-label', TT('text', 'Texto')); v.addEventListener('change', () => this._guard(() => upd({ value: v.value })));
+        const col = el('input', { type: 'color', class: 'r4-tl-color', value: /^#[0-9a-f]{6}$/i.test(tx0.color || '') ? tx0.color : '#ffffff' }); col.setAttribute('aria-label', TT('color', 'Cor')); col.addEventListener('change', () => this._guard(() => upd({ color: col.value })));
+        const an = sel([['', TT('animNone', 'Sem animação')], ['fade', 'Fade'], ['typewriter', TT('animType', 'Máquina de escrever')], ['slideUp', TT('animSlide', 'Subir')], ['pop', 'Pop']], ['anim', 'Animação']); an.value = (tx0.anim && tx0.anim.type) || ''; an.addEventListener('change', () => this._guard(() => upd({ anim: an.value ? { type: an.value, dur: 0.5 } : null })));
+        sec(TT('secText', 'Texto'), [this._field(TT('text', 'Texto'), v), this._field(TT('size', 'Tamanho'), this._num(tx0.size || 0.06, 0.01, 0.5, 0.005, n => upd({ size: n }), TT('size', 'Tamanho'))), this._field(TT('color', 'Cor'), col), this._field(TT('anim', 'Animação'), an)]);
+      }
+      if (c.type === 'shape') {
+        const s0 = c.shape || {}, upd = p => set({ shape: Object.assign({}, s0, p) });
+        const col = el('input', { type: 'color', class: 'r4-tl-color', value: /^#[0-9a-f]{6}$/i.test(s0.fill || '') ? s0.fill : '#ffffff' }); col.setAttribute('aria-label', TT('fill', 'Preenchimento')); col.addEventListener('change', () => this._guard(() => upd({ fill: col.value })));
+        sec(TT('secShape', 'Forma'), [this._field(TT('fill', 'Preenchimento'), col), this._field(TT('w', 'Largura'), this._num(s0.w == null ? 0.3 : s0.w, 0.01, 2, 0.01, n => upd({ w: n }), TT('w', 'Largura'))), this._field(TT('h', 'Altura'), this._num(s0.h == null ? 0.3 : s0.h, 0.01, 2, 0.01, n => upd({ h: n }), TT('h', 'Altura')))]);
+      }
+      if (isMedia) {
+        const cr = c.crop || { x: 0, y: 0, w: 1, h: 1 }, ins = { cropL: cr.x, cropT: cr.y, cropR: 1 - cr.x - cr.w, cropB: 1 - cr.y - cr.h };
+        const apply = (k, v) => { const n = Object.assign({}, ins, { [k]: clamp(v, 0, 0.95) }); if (n.cropL + n.cropR > 0.96) n[k] = Math.max(0, 0.96 - (k === 'cropL' ? n.cropR : k === 'cropR' ? n.cropL : 0)); if (n.cropT + n.cropB > 0.96) n[k] = Math.max(0, 0.96 - (k === 'cropT' ? n.cropB : k === 'cropB' ? n.cropT : 0)); this._cropCommit(c, { x: n.cropL, y: n.cropT, w: +(1 - n.cropL - n.cropR).toFixed(4), h: +(1 - n.cropT - n.cropB).toFixed(4) }); };
+        const kids = [['cropL', 'Esquerda'], ['cropT', 'Topo'], ['cropR', 'Direita'], ['cropB', 'Base']].map(([k, fb]) => this._field(TT(k, fb), this._range(+ins[k].toFixed(3), 0, 0.95, 0.005, v => apply(k, v), TT(k, fb))));
+        const go = btn('cropOn', 'Cortar na tela'); go.addEventListener('click', () => this._setCrop(true)); const rs = btn('cropReset', 'Restaurar recorte'); rs.addEventListener('click', () => this._guard(() => set({ crop: null })));
+        sec(TT('secCrop', 'Recorte (o que aparece)'), kids.concat([el('div', { class: 'r4-md-bar' }, [go, rs])]));
+        const fl = c.effects || [], ci = fl.findIndex(e => e.type === 'chroma'), ch = ci >= 0 ? fl[ci] : null, ck = [];
+        const tg = btn(ch ? 'chromaOff' : 'chromaOn', ch ? 'Remover chroma key' : 'Ativar chroma key');
+        tg.addEventListener('click', () => this._guard(() => set({ effects: ch ? fl.filter((_, j) => j !== ci) : fl.concat([{ type: 'chroma', color: '#00ff00', tolerance: 0.3, softness: 0.1, spill: 0.5 }]) })));
+        ck.push(el('div', { class: 'r4-md-bar' }, [tg]));
+        if (ch) {
+          const upd = pr => { const l = fl.slice(); l[ci] = Object.assign({}, ch, pr); set({ effects: l }); };
+          const ci2 = el('input', { type: 'color', class: 'r4-tl-color', value: /^#[0-9a-f]{6}$/i.test(ch.color || '') ? ch.color : '#00ff00' }); ci2.setAttribute('aria-label', TT('keyColor', 'Cor da chave')); ci2.addEventListener('change', () => this._guard(() => upd({ color: ci2.value })));
+          const pk = btn('picker', 'Conta-gotas (clique no vídeo)'); pk.addEventListener('click', () => this._pickChroma());
+          const sw = (k, fb, hex) => { const b = btn(k, fb); b.addEventListener('click', () => this._guard(() => upd({ color: hex }))); return b; };
+          ck.push(el('div', { class: 'r4-md-bar' }, [ci2, pk, sw('keyGreen', 'Verde', '#00ff00'), sw('keyBlue', 'Azul', '#0047ff')]));
+          for (const [k, fb] of [['tolerance', 'Tolerância'], ['softness', 'Suavidade da borda'], ['spill', 'Remover reflexo da cor']]) ck.push(this._field(TT(k, fb), this._range(ch[k] == null ? 0.3 : ch[k], 0, 1, 0.01, v => upd({ [k]: v }), TT(k, fb))));
+        }
+        sec(TT('secChroma', 'Chroma key (fundo verde ou azul)'), ck);
+      }
+      if (c.type !== 'audio') {
+        const FX = [['', TT('addFx', 'Adicionar efeito...')], ['grade', TT('fxGrade', 'Cor (exposição, contraste...)')], ['chroma', TT('fxChroma', 'Chroma key')], ['blur', TT('fxBlur', 'Desfoque')], ['sharpen', TT('fxSharpen', 'Nitidez')], ['vignette', TT('fxVig', 'Vinheta')], ['pixelate', TT('fxPix', 'Pixelar')], ['grain', TT('fxGrain', 'Granulação')], ['gray', TT('fxGray', 'Preto e branco')], ['invert', TT('fxInv', 'Inverter')]];
+        const DEFS = { grade: { exposure: 0, contrast: 1, saturation: 1, temperature: 0, tint: 0 }, chroma: { color: '#00ff00', tolerance: 0.3, softness: 0.1, spill: 0.5 }, blur: { radius: 6 }, sharpen: { amount: 0.5 }, vignette: { amount: 0.5, size: 0.5 }, pixelate: { size: 8 }, grain: { amount: 0.1 } };
+        const RG = { exposure: [-3, 3, 0.05], contrast: [0, 3, 0.02], saturation: [0, 3, 0.02], temperature: [-1, 1, 0.02], tint: [-1, 1, 0.02], tolerance: [0, 1, 0.01], softness: [0, 1, 0.01], spill: [0, 1, 0.01], radius: [0, 60, 0.5], amount: [0, 2, 0.01], size: [0, 64, 0.5] };
+        const list = (c.effects || []).slice(), kids = [];
+        list.forEach((e, i) => {
+          if (e.type === 'chroma') return;
+          const row = el('div', { class: 'r4-tl-fx' }, [el('strong', { text: (FX.find(f => f[0] === e.type) || [0, e.type])[1] })]);
+          for (const k of Object.keys(DEFS[e.type] || {})) {
+            if (k === 'color') { const ci = el('input', { type: 'color', class: 'r4-tl-color', value: /^#[0-9a-f]{6}$/i.test(e.color || '') ? e.color : '#00ff00' }); ci.setAttribute('aria-label', TT('keyColor', 'Cor da chave')); ci.addEventListener('change', () => this._guard(() => { const l = list.slice(); l[i] = Object.assign({}, e, { color: ci.value }); set({ effects: l }); })); row.append(this._field(TT('keyColor', 'Cor da chave'), ci)); continue; }
+            let [mn, mx, st] = RG[k] || [0, 1, 0.01]; if (e.type === 'vignette' && k === 'size') [mn, mx, st] = [0, 1, 0.01]; if (e.type === 'pixelate') [mn, mx, st] = [1, 64, 1];
+            row.append(this._field(k, this._range(e[k] != null ? e[k] : DEFS[e.type][k], mn, mx, st, v => { const l = list.slice(); l[i] = Object.assign({}, e, { [k]: v }); set({ effects: l }); }, k)));
+          }
+          const off = btn('fxOff', e.off ? 'Ligar' : 'Desligar'); off.addEventListener('click', () => this._guard(() => { const l = list.slice(); l[i] = Object.assign({}, e, { off: !e.off }); set({ effects: l }); }));
+          const rm = btn('fxDel', 'Remover'); rm.addEventListener('click', () => this._guard(() => set({ effects: list.filter((_, j) => j !== i) })));
+          row.append(el('div', { class: 'r4-md-bar' }, [off, rm])); kids.push(row);
+        });
+        const add = sel(FX.filter(f => f[0] !== 'chroma'), ['addFx', 'Adicionar efeito']); add.addEventListener('change', () => { const t = add.value; if (!t) return; this._guard(() => set({ effects: list.concat([Object.assign({ type: t }, DEFS[t] || {})]) })); });
+        kids.push(add);
+        const mk = sel([['', TT('maskNone', 'Sem máscara')], ['rect', TT('maskRect', 'Retângulo')], ['ellipse', TT('maskEll', 'Elipse')]], ['mask', 'Máscara']); mk.value = (c.mask && c.mask.shape) || '';
+        mk.addEventListener('change', () => this._guard(() => set({ mask: mk.value ? Object.assign({ x: 0.5, y: 0.5, w: 0.5, h: 0.5, feather: 0.02 }, c.mask, { shape: mk.value }) : null })));
+        kids.push(this._field(TT('mask', 'Máscara'), mk));
+        if (c.mask) { const m0 = c.mask; for (const [k, fb] of [['w', 'Largura'], ['h', 'Altura'], ['x', 'X'], ['y', 'Y'], ['feather', 'Suavização']]) kids.push(this._field(TT('m_' + k, fb), this._range(m0[k] == null ? 0.5 : m0[k], 0, k === 'feather' ? 0.2 : 1, 0.005, v => set({ mask: Object.assign({}, m0, { [k]: v }) }), fb))); const iv = el('input', { type: 'checkbox', class: 'r4-md-chk', checked: !!m0.invert }); iv.addEventListener('change', () => this._guard(() => set({ mask: Object.assign({}, m0, { invert: iv.checked }) }))); kids.push(el('label', { class: 'r4-md-chkl' }, [iv, el('span', { class: 'r4-md-lbl', text: TT('invert', 'Inverter máscara') })])); }
+        sec(TT('secFx', 'Efeitos e máscara'), kids);
+      }
+      const TRS = [['', TT('trNone', 'Nenhuma')], ['crossfade', TT('trCross', 'Dissolver')], ['fade', 'Fade'], ['wipe', TT('trWipe', 'Cortina')], ['slide', TT('trSlide', 'Deslizar')], ['zoom', 'Zoom']];
+      const trKids = []; for (const [key, fb] of [['transitionIn', 'Entrada'], ['transitionOut', 'Saída']]) { const s = sel(TRS, [key, fb]); const cur = c[key]; s.value = (cur && cur.type) || ''; const d = this._num(cur ? cur.dur : 0.5, 0.1, 5, 0.1, v => set({ [key]: Object.assign({}, c[key], { dur: v }) }), fb); s.addEventListener('change', () => this._guard(() => set({ [key]: s.value ? { type: s.value, dur: (c[key] && c[key].dur) || 0.5, dir: 'left' } : null }))); trKids.push(this._field(TT(key, fb), s), this._field(TT(key + 'D', fb + ' (s)'), d)); }
+      sec(TT('secTr', 'Transições'), trKids);
+      if (c.type === 'video') {
+        const st = btn('stab', c.stab ? 'Refazer estabilização' : 'Estabilizar'), un = btn('unstab', 'Remover estabilização'); un.hidden = !c.stab;
+        st.addEventListener('click', async () => { st.disabled = true; this.status.textContent = TT('analyzing', 'Analisando movimento...'); try { await R4.timeline.stabilize(T, c.id); this.status.textContent = ''; } catch (e) { this._msg(e.message); } st.disabled = false; });
+        un.addEventListener('click', () => this._guard(() => { set({ stab: null }); }));
+        sec(TT('secAn', 'Análise'), [el('div', { class: 'r4-md-bar' }, [st, un])]);
+      }
+    },
+    _mixer() {
+      const box = this.mixEl, T = this.T; box.replaceChildren();
+      for (const tr of T.project.tracks.slice().reverse()) {
+        const row = el('div', { class: 'r4-tl-mixrow' }, [el('strong', { text: shown(tr.name) })]);
+        row.append(this._field(TT('volume', 'Volume'), this._range(tr.volume == null ? 1 : tr.volume, 0, 2, 0.01, v => T.setTrack(tr.id, { volume: v }), shown(tr.name) + ' ' + TT('volume', 'Volume'))));
+        if (tr.kind === 'audio') row.append(this._field(TT('pan', 'Pan'), this._range(tr.pan || 0, -1, 1, 0.01, v => T.setTrack(tr.id, { pan: v }), shown(tr.name) + ' pan')));
+        box.append(row);
+      }
+      const meas = btn('measure', 'Medir volume do projeto'), out = el('output', { class: 'r4-md-meta', 'aria-live': 'polite' });
+      meas.addEventListener('click', async () => { meas.disabled = true; out.textContent = TT('measuring', 'Medindo...'); try { const m = await R4.timeline.mixAudio(T, { rate: 48000 }); if (!m) out.textContent = TT('noAudio', 'Sem áudio no projeto.'); else { const l = R4.dsp.lufs(m); out.textContent = isFinite(l.integrated) ? l.integrated.toFixed(1) + ' LUFS · ' + (l.truePeak != null ? l.truePeak.toFixed(1) + ' dBTP' : '') : TT('noAudio', 'Sem áudio no projeto.'); } } catch (e) { out.textContent = e.message; } meas.disabled = false; });
+      box.append(el('div', { class: 'r4-md-bar' }, [meas, out]), el('p', { class: 'r4-md-hint', text: TT('mixHint', 'Para normalizar na exportação, escolha o volume final (LUFS) ao lado de Exportar.') }));
+    },
+    async _scopes(again) {
+      const box = this.scopeEl; if (!R4.gfx) return;
+      if (!this._scCv) {
+        this._scKind = 'waveform'; this._scCv = el('canvas', { class: 'r4-tl-scv', width: 320, height: 200 }); this._scCv.setAttribute('aria-label', TT('scopeCv', 'Scope do quadro atual'));
+        const k = sel([['waveform', TT('scWave', 'Forma de onda')], ['parade', TT('scParade', 'Parada RGB')], ['vectorscope', TT('scVec', 'Vectorscópio')], ['histogram', TT('scHist', 'Histograma')]], ['scope', 'Tipo de scope']); k.addEventListener('change', () => { this._scKind = k.value; this._scopes(true); });
+        box.replaceChildren(el('div', { class: 'r4-md-bar' }, [k]), this._scCv);
+      }
+      if (this._scopeBusy) return; this._scopeBusy = true;
+      try {
+        const sw = 160, sh = Math.max(8, Math.round(sw * this.cv.height / this.cv.width)), tmp = document.createElement('canvas'); tmp.width = sw; tmp.height = sh;
+        const c2 = tmp.getContext('2d', { willReadFrequently: true }); c2.drawImage(this.cv, 0, 0, sw, sh);
+        const sc = R4.gfx.scopes(c2.getImageData(0, 0, sw, sh), { width: 160 }); R4.gfx.drawScope(this._scCv.getContext('2d'), this._scKind, sc, this._scCv.width, this._scCv.height);
+      } catch (e) { /* quadro ainda não pronto */ }
+      this._scopeBusy = false;
+    },
+    destroy() {
+      const was = this._destroyed; R4.Component.prototype.destroy.call(this); if (was || !this._destroyed) return this;
+      if (this._abort) this._abort.abort(); if (this._offAuto) this._offAuto(); (this._offs || []).splice(0).forEach(f => f()); if (this.player) this.player.destroy(); this._hideResult();
+      if (this._q) this._q.clear(); Object.values(this._thumbs || {}).forEach(u => u && URL.revokeObjectURL(u)); document.documentElement.classList.remove('r4-tl-lock'); return this;
+    }
+  }, {
+    title: 'timelineeditor', group: 'Mídia',
+    description: 'Editor de vídeo multicamadas no navegador, sem bibliotecas: importar mídias, faixas ilimitadas, arrastar/aparar/dividir/ripple, texto e formas, keyframes, velocidade/reverso, blend, máscaras, chroma key, color grading, transições, mixer com LUFS, scopes, legendas SRT/VTT, EDL/FCP XML, estabilização, rastreamento, autosave com histórico e exportação MP4/MOV/MKV/WebM. Tudo local.',
+    props: [
+      { name: 'width / height / fps', type: 'px / px / número', default: '1280 / 720 / 30', desc: 'Formato do projeto.' },
+      { name: 'save', type: 'string', default: "''", desc: 'Identificador para salvar sozinho no navegador (IndexedDB) com histórico de versões.' },
+      { name: 'pps / previewWidth', type: 'px/s / px', default: '80 / 640', desc: 'Zoom inicial da linha do tempo e largura da pré-visualização.' },
+      { name: 'project', type: 'R4.timeline.create()', default: 'null', desc: 'Projeto existente para editar.' },
+      { name: 'T / addFiles(files) / seek(t) / select(id) / exportar()', type: 'método', desc: 'T é o projeto (R4.timeline); importar arquivos, mover o cursor, selecionar clipe, exportar.' },
+      { name: 'change / select / import / done / error', type: 'evento', desc: 'Disparados ao editar, selecionar, importar, concluir exportação e em erros.' }
+    ],
+    events: ['change', 'select', 'import', 'done', 'end', 'error']
+  });
+  R4.registry.timelineeditor.meta.playground = { html: '<r4-timelineeditor{attrs}></r4-timelineeditor>', cfg: {}, controls: { width: 1280, height: 720, fps: 30 } };
+  /* ================= piano roll ================= */
+  const PT = (k, d) => T('r4.pianoroll.' + k, null, d);
+  const pbtn = (key, fb, primary) => { const b = el('button', { type: 'button', class: 'r4-btn r4-md-btn ' + (primary ? 'r4-btn-primary' : '') }); tx(b, 'r4.pianoroll.' + key, fb); return b; };
+  const LANE = 40;
+  const NN = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'], BLACK = [1, 3, 6, 8, 10];
+  const midiName = m => NN[m % 12] + (Math.floor(m / 12) - 1);
+  const cssVar = (node, v, d) => (getComputedStyle(node).getPropertyValue(v) || '').trim() || d;
+
+  R4.define('pianoroll', {
+    config: { notes: null, bpm: 120, bars: 4, low: 36, high: 84, wave: 'piano', grid: 0.25, rowH: 16, beatW: 56, fit: true, instruments: null, names: true, flip: false },
+    build() {
+      if (!R4.music) throw new Error('Módulo R4.music não carregado (pianoroll).');
+      this._offs = []; this.audios = []; this._aSel = null; this._sels = new Set(); this._clip = []; this._tool = 'draw'; this._marq = null; this._cur = { r: 0, b: 0 }; this._pb = null; this._midi = null;
+      this.notes = (Array.isArray(this.notes) ? this.notes : []).slice(0, 5000).map(n => ({ note: Math.round(R4.music.note(n.note != null ? n.note : n.hz).midi), start: +n.start || 0, dur: Math.max(0.0625, n.dur == null ? 1 : +n.dur), vel: n.vel == null ? 0.8 : +n.vel, wave: typeof n.wave === 'string' && n.wave ? n.wave : '' }));
+      this.bBpm = el('input', { type: 'number', class: 'r4-md-sel r4-tl-num', min: '20', max: '400', value: String(this.bpm) }); tx(this.bBpm, 'r4.pianoroll.bpm', 'Andamento (BPM)', 'aria-label');
+      this.gSel = sel([['1', '1/4'], ['0.5', '1/8'], ['0.25', '1/16'], ['0.125', '1/32']], ['grid', 'Grade']); this.gSel.value = String(this.grid);
+      this.wSel = this._instSel(); this.wSel.value = this.wave; this.notes.forEach(n => { if (!n.wave) n.wave = this.wave; });
+      this.bPlay = pbtn('play', 'Tocar', true); this.bStop = pbtn('stop', 'Parar'); this.bQ = pbtn('quant', 'Quantizar'); this.bClr = pbtn('clear', 'Limpar'); this.bDel = pbtn('del', 'Apagar seleção');
+      this.toolDraw = pbtn('toolDraw', 'Desenhar'); this.toolSel = pbtn('toolSel', 'Selecionar'); this.bAll = pbtn('selAll', 'Selecionar tudo'); this.bDup = pbtn('dup', 'Duplicar'); this.bUp = pbtn('up', 'Subir meio tom'); this.bDn = pbtn('down', 'Descer meio tom');
+      this.velIn = el('input', { type: 'range', class: 'r4-md-range', min: '0.1', max: '1', step: '0.05', value: '0.8' }); tx(this.velIn, 'r4.pianoroll.vel', 'Intensidade das notas selecionadas', 'aria-label');
+      this.bNames = pbtn('names', 'Nomes das teclas'); this.bFlip = pbtn('flip', 'Grave em cima'); this.bVoice = pbtn('voice', 'Gravar voz'); this.bAin = pbtn('audioIn', 'Importar áudio'); this.audioIn = el('input', { type: 'file', accept: 'audio/*,video/*,.wav,.mp3,.ogg,.flac,.m4a', hidden: true, tabindex: '-1' }); this.bExp = pbtn('exportMidi', 'Exportar .mid'); this.bWav = pbtn('exportWav', 'Exportar WAV'); this.bImp = pbtn('importMidi', 'Importar .mid'); this.bRec = pbtn('midiIn', 'Teclado MIDI');
+      this.fileIn = el('input', { type: 'file', accept: '.mid,.midi,audio/midi', hidden: true, tabindex: '-1' });
+      const W = () => this._w(), H = () => this._h();
+      this.cv = el('canvas', { class: 'r4-pr-cv', tabindex: '0', width: 10, height: 10, role: 'application' }); tx(this.cv, 'r4.pianoroll.canvas', 'Grade de notas: setas movem o cursor, Enter cria ou apaga uma nota, Delete apaga a selecionada', 'aria-label');
+      this.wrap = el('div', { class: 'r4-pr-wrap' }, [this.cv]); this.leg = el('div', { class: 'r4-pr-leg', 'aria-label': PT('legend', 'Instrumentos nas notas') }); this.info = el('div', { class: 'r4-md-info', role: 'status', 'aria-live': 'polite' }); this.msgEl = el('div', { class: 'r4-md-msg', role: 'alert', hidden: true });
+      return el('div', { class: 'r4-md r4-pr' }, [el('div', { class: 'r4-md-bar' }, [this.bPlay, this.bStop, this.bBpm, this.gSel, this.wSel, this.bClr]), el('div', { class: 'r4-md-bar' }, [this.toolDraw, this.toolSel, this.bAll, this.bDup, this.bUp, this.bDn, this.bQ, this.bDel, this.velIn, this.bNames, this.bFlip]), this.wrap, this.leg, el('div', { class: 'r4-md-bar' }, [this.bImp, this.bExp, this.bWav, this.bRec, this.bVoice, this.bAin]), this.info, this.msgEl, this.fileIn, this.audioIn]);
+    },
+    _instSel() {
+      const cats = R4.music.CATEGORIES, only = Array.isArray(this.instruments) && this.instruments.length ? this.instruments : null, s = el('select', { class: 'r4-md-sel r4-tl-sel' });
+      const ok = (id, c) => !only || only.includes(id) || only.includes(c);
+      Object.keys(cats).forEach(c => { const ids = cats[c].filter(id => ok(id, c)); if (!ids.length) return; const g = el('optgroup', { label: PT('cat_' + c, c) }); ids.forEach(id => g.append(el('option', { value: id, text: PT('inst_' + id, id) }))); s.append(g); });
+      if (!s.options.length) s.append(el('option', { value: 'piano', text: PT('inst_piano', 'piano') }));
+      tx(s, 'r4.pianoroll.wave', 'Timbre', 'aria-label');
+      if (!Array.from(s.options).some(o => o.value === this.wave)) this.wave = s.options[0].value;
+      return s;
+    },
+    _nm(m) { return PT('n' + (m % 12), NN[m % 12]) + ' ' + (Math.floor(m / 12) - 1); },
+    _r(m) { return this.flip ? m - this.low : this.high - m; },
+    _mAt(y) { const r = Math.floor(y / this.rowH); return this.flip ? this.low + r : this.high - r; },
+    _w() { return Math.round(this.bars * 4 * this.beatW) + 48; }, _h() { return (this.high - this.low + 1) * this.rowH + this.audios.length * LANE; },
+    _on(t, e, f) { t.addEventListener(e, f); this._offs.push(() => t.removeEventListener(e, f)); },
+    _msg(m) { this.msgEl.textContent = m || ''; this.msgEl.hidden = !m; },
+    afterRender() {
+      const on = (t, e, f) => this._on(t, e, f); this._resize(); this._setTool('draw'); this._sync(); this._draw();
+      on(this.bPlay, 'click', () => this.play().catch(e => this._msg(e.message))); on(this.bStop, 'click', () => this.stop());
+      on(this.bBpm, 'change', () => { this.bpm = clamp(parseFloat(this.bBpm.value) || 120, 20, 400); this.bBpm.value = String(this.bpm); this.fire('change', this, this.notes); });
+      on(this.gSel, 'change', () => { this.grid = +this.gSel.value; }); on(this.wSel, 'change', () => { this.wave = this.wSel.value; this._ping(60, this.wave); if (this._sels.size) { this._sels.forEach(n => { n.wave = this.wave; }); this._changed(); } });
+      on(this.bQ, 'click', () => { this.quantize(); }); on(this.bClr, 'click', () => { this.notes = []; this._sels.clear(); this._sync(); this._changed(); });
+      on(this.bDel, 'click', () => this._delSel());
+      on(this.bExp, 'click', () => { if (!this.notes.length) return this._msg(PT('empty', 'Não há notas.')); this._dl(R4.music.writeMIDI(this.notes.map(n => ({ note: n.note, start: n.start, dur: n.dur, vel: n.vel })), { bpm: this.bpm }), 'musica.mid'); });
+      on(this.bWav, 'click', () => { if (!this.notes.length) return this._msg(PT('empty', 'Não há notas.')); this._wav().catch(e => this._msg(e.message)); });
+      on(this.bImp, 'click', () => this.fileIn.click());
+      on(this.fileIn, 'change', async () => { const f = this.fileIn.files[0]; this.fileIn.value = ''; if (!f) return; try { if (f.size > 2 * 1048576) throw new Error(PT('big', 'Arquivo MIDI grande demais.')); this.load(new Uint8Array(await f.arrayBuffer())); } catch (e) { this._msg(e.message); } });
+      on(this.bRec, 'click', () => this._midiIn());
+      on(this.bAin, 'click', () => this.audioIn.click());
+      on(this.audioIn, 'change', async () => { const f = this.audioIn.files[0]; this.audioIn.value = ''; if (!f) return; try { if (f.size > 100 * 1048576) throw new Error(PT('big', 'Arquivo grande demais.')); await this.addAudio(f, { name: f.name, start: this._cur.b }); } catch (e) { this._msg(e.message); } });
+      on(this.bVoice, 'click', () => this._voice());
+      const cell = ev => { const r = this.cv.getBoundingClientRect(), x = (ev.clientX - r.left) * this.cv.width / r.width, y = (ev.clientY - r.top) * this.cv.height / r.height; return { m: this._mAt(y), b: Math.max(0, (x - 48) / this.beatW) }; };
+      const pt = ev => { const r = this.cv.getBoundingClientRect(); return { x: (ev.clientX - r.left) * this.cv.width / r.width, y: (ev.clientY - r.top) * this.cv.height / r.height }; };
+      const hitAt = c => this.notes.find(n => n.note === c.m && c.b >= n.start && c.b < n.start + n.dur);
+      const inGrid = c => c.m >= this.low && c.m <= this.high && c.b >= 0 && c.b < this.bars * 4;
+      const drag = (mv, done) => { const up = () => { this.cv.removeEventListener('pointermove', mv); this.cv.removeEventListener('pointerup', up); this.cv.removeEventListener('pointercancel', up); done(); }; this.cv.addEventListener('pointermove', mv); this.cv.addEventListener('pointerup', up); this.cv.addEventListener('pointercancel', up); };
+      on(this.cv, 'pointerdown', ev => {
+        if (ev.button > 0) return; this.cv.focus(); this._aSel = null; const c = cell(ev), g = this.grid, add = ev.shiftKey || ev.ctrlKey || ev.metaKey, hit = hitAt(c);
+        try { this.cv.setPointerCapture(ev.pointerId); } catch (e) { /* ponteiro sintético */ }
+        const pp0 = pt(ev), rowsH = (this.high - this.low + 1) * this.rowH;
+        if (pp0.y >= rowsH) {
+          const ac = this.audios[Math.floor((pp0.y - rowsH) / LANE)]; this._sels.clear(); this._aSel = ac || null; this._sync(); this._draw(); if (!ac) return;
+          const s0 = ac.start, x0 = pp0.x, g2 = this.grid; drag(e2 => { const x = pt(e2).x; ac.start = Math.max(0, Math.round(((x - x0) / this.beatW + s0) / g2) * g2); this._draw(); }, () => this._changed()); return;
+        }
+        if (hit) {
+          this._ping(hit.note, hit.wave);
+          if (add) { if (this._sels.has(hit)) this._sels.delete(hit); else this._sels.add(hit); this._sync(); this._draw(); return; }
+          if (!this._sels.has(hit)) { this._sels.clear(); this._sels.add(hit); }
+          const mode = c.b > hit.start + hit.dur - Math.min(0.5, hit.dur / 3) ? 'size' : 'move', snap = Array.from(this._sels).map(n => ({ n, s: n.start, d: n.dur, m: n.note })), b0 = c.b;
+          const lo = Math.min(...snap.map(x => x.m)), hi = Math.max(...snap.map(x => x.m)); let moved = false;
+          this._sync(); this._draw();
+          drag(e2 => { const q = cell(e2), d = Math.round((q.b - b0) / g) * g; moved = true;
+            if (mode === 'size') snap.forEach(x => { x.n.dur = Math.max(g, x.d + d); });
+            else { const dm = clamp(q.m - c.m, this.low - lo, this.high - hi), first = Math.min(...snap.map(x => x.s)); const dd = Math.max(d, -first); snap.forEach(x => { x.n.start = x.s + dd; if (x.n.note !== x.m + dm) { x.n.note = x.m + dm; } }); if (snap.length === 1 && snap[0].n.note !== this._lastPing) { this._lastPing = snap[0].n.note; this._ping(snap[0].n.note); } }
+            this._draw(); }, () => { if (moved) this._changed(); });
+          return;
+        }
+        if (this._tool === 'draw' && !add) {
+          if (!inGrid(c)) return; this._ping(c.m);
+          const n = { note: c.m, start: Math.floor(c.b / g) * g, dur: g, vel: this._vel(), wave: this.wave }; this.notes.push(n); this._sels.clear(); this._sels.add(n); this._sync(); this._draw(); const b0 = c.b;
+          drag(e2 => { const q = cell(e2); n.dur = Math.max(g, g + Math.round((q.b - b0) / g) * g); this._draw(); }, () => this._changed());
+          return;
+        }
+        const p0 = pt(ev), base = add ? new Set(this._sels) : new Set(); if (!add) this._sels.clear(); this._sync();
+        drag(e2 => { const p1 = pt(e2), x1 = Math.min(p0.x, p1.x), x2 = Math.max(p0.x, p1.x), y1 = Math.min(p0.y, p1.y), y2 = Math.max(p0.y, p1.y); this._marq = { x1, y1, x2, y2 };
+          this._sels = new Set(base); for (const n of this.notes) { const nx = 48 + n.start * this.beatW, ny = this._r(n.note) * this.rowH; if (nx < x2 && nx + n.dur * this.beatW > x1 && ny < y2 && ny + this.rowH > y1) this._sels.add(n); } this._draw(); },
+        () => { this._marq = null; this._sync(); this._draw(); });
+      });
+      let tipN = null; on(this.cv, 'pointermove', ev => { if (ev.buttons) return; const pp = pt(ev), rh0 = (this.high - this.low + 1) * this.rowH, ac = pp.y >= rh0 ? this.audios[Math.floor((pp.y - rh0) / LANE)] : null; if (ac) { tipN = null; this.cv.title = ac.name + ' · ' + (ac.audio.channels[0].length / ac.audio.sampleRate).toFixed(1) + ' s'; return; } const n = hitAt(cell(ev)) || null; if (n === tipN) return; tipN = n; if (n) this.cv.title = this._tip(n) + ' · ' + midiName(n.note) + ' · ' + n.dur + ' ' + PT('beats', 'tempos'); else this.cv.removeAttribute('title'); });
+      on(this.cv, 'pointerleave', () => { tipN = null; this.cv.removeAttribute('title'); });
+      on(this.cv, 'dblclick', ev => { const c = cell(ev); if (hitAt(c) || !inGrid(c)) return; const g = this.grid, n = { note: c.m, start: Math.floor(c.b / g) * g, dur: g, vel: this._vel(), wave: this.wave }; this.notes.push(n); this._sels.clear(); this._sels.add(n); this._ping(c.m); this._sync(); this._changed(); });
+      on(this.cv, 'contextmenu', ev => { ev.preventDefault(); const h = hitAt(cell(ev)); if (!h) return; if (!this._sels.has(h)) { this._sels.clear(); this._sels.add(h); } this._delSel(); });
+      const tg = (b, k) => { b.setAttribute('aria-pressed', String(!!this[k])); b.classList.toggle('r4-tl-on', !!this[k]); }; tg(this.bNames, 'names'); tg(this.bFlip, 'flip');
+      on(this.bNames, 'click', () => { this.names = !this.names; tg(this.bNames, 'names'); this._draw(); }); on(this.bFlip, 'click', () => { this.flip = !this.flip; tg(this.bFlip, 'flip'); this._draw(); });
+      on(this.toolDraw, 'click', () => this._setTool('draw')); on(this.toolSel, 'click', () => this._setTool('select'));
+      on(this.bAll, 'click', () => { this._sels = new Set(this.notes); this._sync(); this._draw(); this.cv.focus(); });
+      on(this.bDup, 'click', () => this._dup()); on(this.bUp, 'click', () => this._shift(1, 0)); on(this.bDn, 'click', () => this._shift(-1, 0));
+      on(this.velIn, 'input', () => { const v = +this.velIn.value; this._sels.forEach(n => { n.vel = v; }); if (this._sels.size) this._changed(); });
+      on(this.cv, 'keydown', ev => {
+        const k = ev.key, c = this._cur, g = this.grid, mod = ev.ctrlKey || ev.metaKey, has = this._sels.size > 0;
+        if (mod && (k === 'a' || k === 'A')) { this._sels = new Set(this.notes); }
+        else if (mod && (k === 'c' || k === 'C')) { this._clip = Array.from(this._sels).map(n => Object.assign({}, n)); this.info.textContent = this._clip.length + ' ' + PT('copied', 'notas copiadas'); }
+        else if (mod && (k === 'x' || k === 'X')) { this._clip = Array.from(this._sels).map(n => Object.assign({}, n)); this._delSel(); }
+        else if (mod && (k === 'v' || k === 'V')) { this._paste(); }
+        else if (mod && (k === 'd' || k === 'D')) { this._dup(); }
+        else if (k === 'Escape') { this._sels.clear(); }
+        else if (has && k === 'ArrowUp') { this._shift(ev.shiftKey ? 12 : 1, 0); }
+        else if (has && k === 'ArrowDown') { this._shift(ev.shiftKey ? -12 : -1, 0); }
+        else if (has && k === 'ArrowRight') { this._shift(0, g); }
+        else if (has && k === 'ArrowLeft') { this._shift(0, -g); }
+        else if (k === 'ArrowUp' || k === 'ArrowDown') { const d = (k === 'ArrowUp' ? 1 : -1) * (this.flip ? -1 : 1); c.r = clamp(c.r + d, 0, this.high - this.low); } else if (k === 'ArrowRight') c.b = Math.min(this.bars * 4 - g, c.b + g); else if (k === 'ArrowLeft') c.b = Math.max(0, c.b - g);
+        else if (k === 'Enter' || k === ' ') { const m = this.low + c.r, i = this.notes.findIndex(n => n.note === m && c.b >= n.start && c.b < n.start + n.dur); if (i >= 0) this.notes.splice(i, 1); else { this.notes.push({ note: m, start: c.b, dur: g, vel: this._vel(), wave: this.wave }); this._ping(m); } this._sels.clear(); this._changed(); }
+        else if (k === 'Delete' || k === 'Backspace') this._delSel(); else return;
+        ev.preventDefault(); this._sync(); if (!has) this.info.textContent = midiName(this.low + c.r) + ' · ' + PT('beat', 'tempo') + ' ' + (c.b + 1).toFixed(2); this._draw();
+      });
+      this._ro = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { const w = this.wrap.clientWidth; if (w !== this._lw) { this._lw = w; this._resize(); } this._draw(); }) : null; if (this._ro) this._ro.observe(this.wrap);
+      this._time = -1;
+    },
+    _resize() {
+      if (this._bw0 == null) this._bw0 = this.beatW;
+      if (this.fit !== false && this.wrap.clientWidth > 120) this.beatW = Math.max(this._bw0, (this.wrap.clientWidth - 48 - 1) / (this.bars * 4)); else this.beatW = this._bw0;
+      this.cv.width = this._w(); this.cv.height = this._h(); this.cv.style.width = this.cv.width + 'px'; this.cv.style.height = this.cv.height + 'px'; },
+    _vel() { return +this.velIn.value || 0.8; },
+    _sync() { const n = this._sels.size; this.info.textContent = n ? n + ' ' + (n === 1 ? PT('oneSel', 'nota selecionada') : PT('manySel', 'notas selecionadas')) : ''; this.bDel.disabled = this.bDup.disabled = this.bUp.disabled = this.bDn.disabled = !n; if (n) { const v = Array.from(this._sels)[0].vel; this.velIn.value = String(v == null ? 0.8 : v); } },
+    _setTool(t) { this._tool = t; this.toolDraw.setAttribute('aria-pressed', String(t === 'draw')); this.toolSel.setAttribute('aria-pressed', String(t === 'select')); this.toolDraw.classList.toggle('r4-tl-on', t === 'draw'); this.toolSel.classList.toggle('r4-tl-on', t === 'select'); this.cv.style.cursor = t === 'draw' ? 'crosshair' : 'default'; },
+    _delSel() { if (this._aSel && !this._sels.size) { this.removeAudio(this._aSel.id); return; } if (!this._sels.size) return; this.notes = this.notes.filter(n => !this._sels.has(n)); this._sels.clear(); this._sync(); this._changed(); },
+    _shift(dm, db) { if (!this._sels.size) return; const l = Array.from(this._sels); const mn = Math.min(...l.map(n => n.note)), mx = Math.max(...l.map(n => n.note)), ms = Math.min(...l.map(n => n.start)); dm = clamp(dm, this.low - mn, this.high - mx); db = Math.max(db, -ms); l.forEach(n => { n.note += dm; n.start += db; }); if (dm) this._ping(l[0].note); this._changed(); },
+    _dup() { if (!this._sels.size) return; const l = Array.from(this._sels), s0 = Math.min(...l.map(n => n.start)), e0 = Math.max(...l.map(n => n.start + n.dur)), off = Math.ceil((e0 - s0) / this.grid) * this.grid; this._sels = new Set(l.map(n => { const c = Object.assign({}, n, { start: n.start + off }); this.notes.push(c); return c; })); this._sync(); this._changed(); },
+    _paste() { if (!this._clip.length) return; const s0 = Math.min(...this._clip.map(n => n.start)), at = this._cur.b; this._sels = new Set(this._clip.map(n => { const c = Object.assign({}, n, { start: Math.max(0, at + n.start - s0) }); this.notes.push(c); return c; })); this._sync(); this._changed(); },
+    _changed() { this._draw(); this.fire('change', this, this.notes); },
+    _ping(m, w) {
+      if (this._pingOff) return; w = w || this.wave;
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext, ac = this._ac = this._ac || new AC(), bufs = this._bufs = this._bufs || {}, k = w + ':' + m; if (ac.state === 'suspended') ac.resume();
+        if (!bufs[k]) { const a = R4.music.render([{ note: m, start: 0, dur: 0.5, vel: 0.8 }], { bpm: 120, wave: w, rate: 22050 }), b = ac.createBuffer(1, a.channels[0].length, a.sampleRate); b.copyToChannel(a.channels[0], 0); bufs[k] = b; }
+        const src = ac.createBufferSource(); src.buffer = bufs[k]; src.connect(ac.destination); src.start();
+      } catch (e) { this._pingOff = true; }
+    },
+    _col(w) { const cats = Object.keys(R4.music.CATEGORIES); let ci = 0, k = 0; cats.some((c, i) => { const x = R4.music.CATEGORIES[c].indexOf(w); if (x >= 0) { ci = i; k = x; return true; } return false; }); return 'hsl(' + ((ci * 47 + k * 11) % 360) + ' ' + (62 + (k % 3) * 8) + '% ' + (50 + (k % 2) * 9) + '%)'; },
+    _tip(n) { return PT('inst_' + (n.wave || this.wave), n.wave || this.wave); },
+    _draw() {
+      const cv = this.cv, c = cv.getContext('2d'), w = cv.width, h = cv.height, rh = this.rowH, bw = this.beatW, ink = cssVar(cv, '--r4-txt', '#e6e6e6'), line = cssVar(cv, '--r4-line', '#444'), bgc = cssVar(cv, '--r4-bg', '#111'), alt = cssVar(cv, '--r4-hover', '#1a1a1a'), acc = cssVar(cv, '--r4-acc', '#3b82f6');
+      c.clearRect(0, 0, w, h); c.fillStyle = bgc; c.fillRect(0, 0, w, h);
+      for (let m = this.high; m >= this.low; m--) { const y = this._r(m) * rh, blk = BLACK.includes(m % 12); c.fillStyle = blk ? alt : bgc; c.fillRect(48, y, w - 48, rh); c.fillStyle = blk ? '#222' : '#f4f4f4'; c.fillRect(0, y, blk ? 34 : 46, rh - 1); if (this.names || m % 12 === 0) { c.fillStyle = blk ? '#eee' : '#222'; c.font = '10px sans-serif'; c.textBaseline = 'middle'; c.fillText(this.names ? this._nm(m) : midiName(m), 4, y + rh / 2); } }
+      c.strokeStyle = line; c.lineWidth = 1; const nb = this.bars * 4, g = this.grid;
+      for (let b = 0; b <= nb; b += g) { const x = Math.round(48 + b * bw) + .5; c.globalAlpha = b % 4 === 0 ? 1 : b % 1 === 0 ? 0.6 : 0.25; c.beginPath(); c.moveTo(x, 0); c.lineTo(x, h); c.stroke(); }
+      c.globalAlpha = 0.3; for (let m = this.high; m >= this.low; m--) { const y = Math.round((this._r(m) + 1) * rh) + .5; c.beginPath(); c.moveTo(48, y); c.lineTo(w, y); c.stroke(); } c.globalAlpha = 1;
+      const used = new Map(); c.font = '10px sans-serif'; c.textBaseline = 'middle';
+      this.notes.forEach(n => { if (n.note < this.low || n.note > this.high) return; const x = 48 + n.start * bw, y = this._r(n.note) * rh, ww = Math.max(3, n.dur * bw - 1), col = this._col(n.wave); used.set(n.wave, col); c.globalAlpha = 0.45 + 0.55 * n.vel; c.fillStyle = col; c.fillRect(x, y + 1, ww, rh - 2); c.globalAlpha = 1;
+        if (ww > 14) { const nm = this._tip(n); let t = nm; if (c.measureText(t).width > ww - 4) t = nm.slice(0, 3); if (c.measureText(t).width <= ww - 4) { c.fillStyle = '#000'; c.fillText(t, x + 3, y + rh / 2 + 0.5); } }
+        if (this._sels.has(n)) { c.strokeStyle = ink; c.lineWidth = 2; c.strokeRect(x + 1, y + 2, ww - 2, rh - 4); c.lineWidth = 1; } });
+      this._legend(used);
+      const y0 = (this.high - this.low + 1) * rh, spb = 60 / this.bpm;
+      this.audios.forEach((ac, i) => { const y = y0 + i * LANE, x = 48 + ac.start * bw, ww = Math.max(4, ac.audio.channels[0].length / ac.audio.sampleRate / spb * bw); c.fillStyle = alt; c.fillRect(0, y, w, LANE - 1); c.fillStyle = ink; c.font = '10px sans-serif'; c.textBaseline = 'middle'; c.fillText(PT('lane', 'Áudio'), 4, y + LANE / 2);
+        c.fillStyle = '#18a98a'; c.globalAlpha = 0.6; c.fillRect(x, y + 2, ww, LANE - 5); c.globalAlpha = 1;
+        const pk = ac.pk, n = pk.length / 2, mid = y + LANE / 2; c.strokeStyle = '#eafff8'; c.beginPath(); for (let px = 0; px < ww; px += 1) { const k = Math.min(n - 1, Math.floor(px / ww * n)); c.moveTo(x + px + .5, mid + pk[k * 2] * (LANE / 2 - 4)); c.lineTo(x + px + .5, mid + Math.max(pk[k * 2 + 1], pk[k * 2] + 0.02) * (LANE / 2 - 4)); } c.stroke();
+        c.fillStyle = '#000'; c.fillText(ac.name, x + 4, y + 8); if (this._aSel === ac) { c.strokeStyle = ink; c.lineWidth = 2; c.strokeRect(x + 1, y + 3, ww - 2, LANE - 7); c.lineWidth = 1; } });
+      if (this._marq) { const q = this._marq; c.fillStyle = acc; c.globalAlpha = 0.18; c.fillRect(q.x1, q.y1, q.x2 - q.x1, q.y2 - q.y1); c.globalAlpha = 1; c.strokeStyle = acc; c.setLineDash([4, 3]); c.strokeRect(q.x1 + .5, q.y1 + .5, q.x2 - q.x1, q.y2 - q.y1); c.setLineDash([]); }
+      const cur = this._cur; if (document.activeElement === cv) { c.strokeStyle = ink; c.setLineDash([3, 2]); c.strokeRect(48 + cur.b * bw + .5, this._r(this.low + cur.r) * rh + .5, Math.max(4, g * bw), rh - 1); c.setLineDash([]); }
+      if (this._time >= 0) { const x = 48 + this._time * bw; c.strokeStyle = ink; c.lineWidth = 2; c.beginPath(); c.moveTo(x, 0); c.lineTo(x, h); c.stroke(); c.lineWidth = 1; }
+    },
+    _legend(used) { const key = Array.from(used.keys()).join(','); if (key === this._legKey) return; this._legKey = key; this.leg.textContent = ''; used.forEach((col, w) => { const b = el('span', { class: 'r4-pr-chip', title: PT('inst_' + w, w) }, [el('i', { style: 'background:' + col }), el('span', { text: PT('inst_' + w, w) })]); this.leg.append(b); }); },
+    quantize(g) { g = g || this.grid; for (const n of this.notes) { n.start = Math.round(n.start / g) * g; n.dur = Math.max(g, Math.round(n.dur / g) * g); } this._changed(); return this; },
+    load(bytes) { const m = R4.music.readMIDI(bytes); this.notes = m.notes.slice(0, 5000).map(n => ({ note: Math.round(R4.music.note(n.note).midi), start: n.start, dur: Math.max(0.0625, n.dur), vel: n.vel == null ? 0.8 : n.vel, wave: this.wave })); this.bpm = m.bpm || this.bpm; this.bBpm.value = String(this.bpm); const end = this.notes.reduce((e, n) => Math.max(e, n.start + n.dur), 0), lo = Math.min(this.low, ...this.notes.map(n => n.note)), hi = Math.max(this.high, ...this.notes.map(n => n.note)); this.bars = clamp(Math.ceil(end / 4) || this.bars, 1, 64); this.low = clamp(lo, 0, 126); this.high = clamp(hi, this.low + 1, 127); this._resize(); this._sels.clear(); this._sync(); this._changed(); return this; },
+    async _wav() { const a = this._mixAll(); if (!a) return this._msg(PT('empty', 'Não há notas.')); const b = await R4.audio.encode(a, 'wav'); this._dl(b, 'musica.wav'); },
+    _dl(blob, name) { if (!blob) return; const a = el('a', { href: URL.createObjectURL(blob), download: name }); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); },
+    async play() {
+      this.stop(); const a = this._mixAll(); if (!a) { this._msg(PT('empty', 'Não há notas.')); return this; } this._msg('');
+      this._pb = R4.audio.play(a); const t0 = performance.now(), spb = 60 / this.bpm, pb = this._pb;
+      const tick = () => { if (this._pb !== pb || this._destroyed) return; this._time = (performance.now() - t0) / 1000 / spb; this._draw(); this._raf = requestAnimationFrame(tick); }; tick();
+      pb.ended.then(() => { if (this._pb === pb) { this._pb = null; this._time = -1; if (!this._destroyed) this._draw(); } }); return this;
+    },
+    stop() { if (this._pb) { this._pb.stop(); this._pb = null; } cancelAnimationFrame(this._raf); this._time = -1; this._draw(); return this; },
+    _mixAll() {
+      const list = []; if (this.notes.length) list.push({ audio: R4.music.render(this.notes, { bpm: this.bpm, wave: this.wave }) });
+      this.audios.forEach(c => list.push({ audio: c.audio, offset: c.start * 60 / this.bpm, gain: 20 * Math.log10(Math.max(1e-4, c.gain)) }));
+      return list.length ? R4.audio.mix(list) : null;
+    },
+    async addAudio(src, o) {
+      o = o || {}; const a = src && src.channels ? src : await R4.audio.decode(src, { sampleRate: 44100 });
+      if (!a.channels[0].length) throw new Error(PT('noAudio', 'Áudio vazio.'));
+      const c = { id: 'a' + (this._aid = (this._aid || 0) + 1), name: o.name || PT('lane', 'Áudio'), audio: a, start: Math.max(0, o.start || 0), gain: o.gain == null ? 1 : o.gain, pk: R4.audio.peaks(a, 600) };
+      this.audios.push(c); this._aSel = c; this._resize(); this._draw(); this.info.textContent = PT('audioAdded', 'Áudio adicionado') + ': ' + c.name; this.fire('change', this, this.notes); return c;
+    },
+    removeAudio(id) { const i = this.audios.findIndex(c => c.id === id); if (i < 0) return this; this.audios.splice(i, 1); if (this._aSel && this._aSel.id === id) this._aSel = null; this._resize(); this._draw(); this.fire('change', this, this.notes); return this; },
+    async _voice() {
+      try {
+        if (this._rec) { const r = this._rec; this._rec = null; this.bVoice.setAttribute('aria-pressed', 'false'); this.bVoice.classList.remove('r4-tl-on'); tx(this.bVoice, 'r4.pianoroll.voice', 'Gravar voz'); const a = await r.stop(); await this.addAudio(a, { name: PT('voiceName', 'Voz'), start: this._cur.b }); return; }
+        this._msg(''); this._rec = await R4.audio.record(); this.bVoice.setAttribute('aria-pressed', 'true'); this.bVoice.classList.add('r4-tl-on'); tx(this.bVoice, 'r4.pianoroll.voiceStop', 'Parar gravação'); this.info.textContent = PT('recording', 'Gravando pelo microfone...');
+      } catch (e) { this._rec = null; this.bVoice.setAttribute('aria-pressed', 'false'); this.bVoice.classList.remove('r4-tl-on'); this._msg(e.name === 'NotAllowedError' ? PT('micDenied', 'Acesso ao microfone negado.') : e.message); }
+    },
+    async _midiIn() {
+      if (this._midi) { this._midi.close(); this._midi = null; this.bRec.setAttribute('aria-pressed', 'false'); this.info.textContent = ''; return; }
+      if (!navigator.requestMIDIAccess) return this._msg(PT('noMidi', 'Este navegador não tem MIDI (use Chrome ou Edge em HTTPS).'));
+      try {
+        const acc = await navigator.requestMIDIAccess(), down = {}, t0 = performance.now(); let n = 0;
+        const h = ev => { const [s, k, v] = ev.data, t = (performance.now() - t0) / 1000 * this.bpm / 60; if ((s & 0xf0) === 0x90 && v > 0) { down[k] = { t, v }; this._ping(k); } else if ((s & 0xf0) === 0x80 || ((s & 0xf0) === 0x90 && !v)) { const d = down[k]; if (d) { delete down[k]; this.notes.push({ note: k, start: Math.round(d.t / this.grid) * this.grid, dur: Math.max(this.grid, Math.round((t - d.t) / this.grid) * this.grid), vel: d.v / 127, wave: this.wave }); n++; this.info.textContent = PT('recorded', 'Notas gravadas') + ': ' + n; this._changed(); } } };
+        acc.inputs.forEach(i => { i.onmidimessage = h; }); this._midi = { close() { acc.inputs.forEach(i => { i.onmidimessage = null; }); } }; this.bRec.setAttribute('aria-pressed', 'true'); this.info.textContent = acc.inputs.size ? PT('midiOn', 'Tocando no teclado MIDI: as notas entram a partir de agora.') : PT('noInput', 'Nenhum teclado MIDI conectado.');
+      } catch (e) { this._msg(PT('midiDenied', 'Acesso ao MIDI negado.')); }
+    },
+    destroy() { const was = this._destroyed; R4.Component.prototype.destroy.call(this); if (was || !this._destroyed) return this; this.stop(); if (this._midi) this._midi.close(); if (this._rec) this._rec.cancel(); if (this._ac) { try { this._ac.close(); } catch (e) { /* ok */ } } if (this._ro) this._ro.disconnect(); (this._offs || []).splice(0).forEach(f => f()); return this; }
+  }, {
+    title: 'pianoroll', group: 'Mídia',
+    description: 'Piano roll sem bibliotecas: grade de notas com arrastar/redimensionar, teclado do computador, quantização, tocar com os timbres do R4.music, importar e exportar .mid, exportar WAV e gravar de um teclado MIDI (WebMIDI, Chrome/Edge em HTTPS).',
+    props: [
+      { name: 'notes', type: '[{note, start, dur, vel, wave}]', default: '[]', desc: 'Notas (nome "C4" ou número MIDI; start/dur em tempos). Cada nota pode ter o seu instrumento em wave (\'guitar\', \'bass\'...); sem wave usa o instrumento do seletor.' },
+      { name: 'bpm / bars / low / high', type: 'número', default: '120 / 4 / 36 / 84', desc: 'Andamento, compassos e faixa de notas (números MIDI).' },
+      { name: 'instruments', type: 'string[]', default: 'todos', desc: "Limita os instrumentos do seletor, por id ('guitar') ou categoria ('cordas', 'sopro', 'metais', 'percussao', 'teclas', 'sintetizador', 'basico'). Ex.: instruments: ['cordas','percussao']." },
+      { name: 'addAudio(fonte, {name, start}) / removeAudio(id) / audios', type: 'método', desc: 'Faixas de áudio sob a grade (voz gravada ou arquivo importado, em tempos); tocam junto das notas e vão no WAV. Os botões Gravar voz (microfone, HTTPS) e Importar áudio fazem o mesmo na interface; arraste a faixa para mover e Delete remove.' },
+      { name: 'names / flip', type: 'boolean', default: 'true / false', desc: 'names mostra o nome de cada tecla (Dó, Ré, Mi... em português; C, D, E... em inglês) com a oitava; flip coloca os graves em cima. Ambos têm botão na barra.' },
+      { name: 'fit', type: 'boolean', default: 'true', desc: 'A grade se estica para ocupar toda a largura disponível.' },
+      { name: 'wave / grid', type: 'string / número', default: "'piano' / 0.25", desc: 'Timbre e divisão da grade (em tempos).' },
+      { name: 'notes / play() / stop() / quantize(g) / load(bytes)', type: 'método', desc: 'Lista atual, tocar, parar, quantizar e abrir um .mid.' },
+      { name: 'change', type: 'evento', desc: 'Disparado a cada edição de notas.' }
+    ],
+    events: ['change']
+  });
+  R4.registry.pianoroll.meta.playground = { html: '<r4-pianoroll{attrs}></r4-pianoroll>', cfg: {}, controls: { bpm: 120, bars: 4 } };
+  if (R4.quickMap) { R4.quickMap.pianoroll = (a, b) => (a && typeof a === 'object' && !Array.isArray(a) ? a : Object.assign({ notes: a || [] }, b)); R4.quickMap.timelineeditor = (a, b) => (a && typeof a === 'object' ? a : Object.assign({}, b)); }
+
+  if (R4.i18n && R4.i18n.add) { R4.i18n.add('pt-BR', { r4: { timelineeditor: SPT } }); R4.i18n.add('en', { r4: { timelineeditor: SEN } }); }
+  if (R4.i18n && R4.i18n.add) {
+    R4.i18n.add('pt-BR', { r4: {
+      timelineeditor: { bitrate: 'Taxa de bits em Mbps (vazio = automática)', stab: 'Estabilizar', posY: 'Posição Y', posX: 'Posição X', fxOff: 'Ligar/desligar', transitionIn: 'Entrada', transitionOut: 'Saída', rot: 'Rotação', opacity: 'Opacidade', ruler: 'Linha do tempo: use as setas para mover o cursor', preview: 'Pré-visualização do projeto', scale: 'Escala', progress: 'Progresso da exportação', unstab: 'Remover estabilização', snap: 'Imã', tab_scope: 'Scopes', lock: 'Bloquear faixa', tab_ins: 'Inspetor', solo: 'Solo', mute: 'Silenciar faixa', tab_mix: 'Mixer', play: 'Tocar', split: 'Dividir', del: 'Apagar', ripple: 'Apagar e fechar', undo: 'Desfazer', redo: 'Refazer', marker: 'Marcador', zoomIn: 'Zoom +', zoomOut: 'Zoom -', add: 'Adicionar...', addV: 'Faixa de vídeo', addA: 'Faixa de áudio', addText: 'Título', addLower: 'Lower third', addRect: 'Retângulo', addEllipse: 'Elipse', addAdjust: 'Camada de ajuste', media: 'Importar mídia', file: 'Arquivo...', exSrt: 'Exportar legendas SRT', exVtt: 'Exportar legendas VTT', impSub: 'Importar legendas SRT/VTT', exEdl: 'Exportar EDL', exXml: 'Exportar FCP XML', impXml: 'Importar EDL/XML (usa as mídias já importadas)', exJson: 'Salvar projeto (JSON)', exFrame: 'Salvar quadro atual (PNG)', proxy: 'Gerar proxies de vídeo', pxy: 'Rascunho 360p', noNorm: 'Sem normalizar', cbrNo: 'Taxa automática', export: 'Exportar vídeo', cancel: 'Cancelar', queue: 'Enviar para a fila', pause: 'Pausar', saved: 'Salvo', saveErr: 'Não foi possível salvar neste navegador.', badFile: 'Tipo de arquivo não suportado: ', tooBig: 'Arquivo grande demais: ', noVideo: 'O arquivo não tem vídeo: ', noCues: 'Nenhuma legenda encontrada.', title: 'Título', titleText: 'Seu título aqui', lowerText: 'Nome Sobrenome', imported: '{n} clipes importados', noMatch: 'Nenhum clipe correspondeu às mídias importadas. Importe as mídias antes.', proxying: 'Gerando proxy', proxyDone: 'Proxies prontos: a pré-visualização fica mais leve. A exportação usa o original.', download: 'Baixar', noQueue: 'Módulo R4.queue não carregado.', queued: 'Fila: concluído', queuedAdd: 'Projeto enviado para a fila de renderização.', selectHint: 'Selecione um clipe para editar. Arraste para mover, as bordas para aparar. Espaço toca, S divide.', bg: 'Cor de fundo', key: 'Keyframe', secClip: 'Clipe', start: 'Início (s)', dur: 'Duração (s)', dup: 'Duplicar', secTf: 'Transformação', speed: 'Velocidade', blend: 'Mistura', reverse: 'Reverso', secTime: 'Mistura e tempo', secAudio: 'Áudio do clipe', volume: 'Volume', fadeIn: 'Fade-in (s)', fadeOut: 'Fade-out (s)', text: 'Texto', color: 'Cor', animNone: 'Sem animação', animType: 'Máquina de escrever', animSlide: 'Subir', secText: 'Texto', size: 'Tamanho', anim: 'Animação', fill: 'Preenchimento', secShape: 'Forma', w: 'Largura', h: 'Altura', addFx: 'Adicionar efeito...', fxGrade: 'Cor (exposição, contraste...)', fxChroma: 'Chroma key', fxBlur: 'Desfoque', fxSharpen: 'Nitidez', fxVig: 'Vinheta', fxPix: 'Pixelar', fxGrain: 'Granulação', fxGray: 'Preto e branco', fxInv: 'Inverter', keyColor: 'Cor da chave', fxDel: 'Remover', maskNone: 'Sem máscara', maskRect: 'Retângulo', maskEll: 'Elipse', mask: 'Máscara', invert: 'Inverter máscara', secFx: 'Efeitos e máscara', trNone: 'Nenhuma', trCross: 'Dissolver', trWipe: 'Cortina', trSlide: 'Deslizar', secTr: 'Transições', unstab: 'Remover estabilização', analyzing: 'Analisando movimento...', secAn: 'Análise', pan: 'Pan', measure: 'Medir volume do projeto', measuring: 'Medindo...', noAudio: 'Sem áudio no projeto.', mixHint: 'Para normalizar na exportação, escolha o volume final (LUFS) ao lado de Exportar.', scopeCv: 'Scope do quadro atual', scWave: 'Forma de onda', scParade: 'Parada RGB', scVec: 'Vectorscópio', scHist: 'Histograma', preset: 'Predefinição de exportação', lufs: 'Volume final', rate: 'Modo de taxa de bits', scope: 'Tipo de scope' },
+      pianoroll: { bpm: 'Andamento (BPM)', canvas: 'Grade de notas: setas movem o cursor, Enter cria ou apaga uma nota, Delete apaga a selecionada', play: 'Tocar', stop: 'Parar', quant: 'Quantizar', clear: 'Limpar', del: 'Apagar nota', exportMidi: 'Exportar .mid', exportWav: 'Exportar WAV', importMidi: 'Importar .mid', midiIn: 'Teclado MIDI', empty: 'Não há notas.', big: 'Arquivo MIDI grande demais.', beat: 'tempo', noMidi: 'Este navegador não tem MIDI (use Chrome ou Edge em HTTPS).', recorded: 'Notas gravadas', midiOn: 'Tocando no teclado MIDI: as notas entram a partir de agora.', noInput: 'Nenhum teclado MIDI conectado.', midiDenied: 'Acesso ao MIDI negado.', grid: 'Grade', wave: 'Timbre' }
+    } });
+  }
+  if (R4.i18n && R4.i18n.add) {
+    R4.i18n.add('en', { r4: {
+      timelineeditor: { preview: 'Project preview', play: 'Play', pause: 'Pause', split: 'Split', del: 'Delete', ripple: 'Ripple delete', undo: 'Undo', redo: 'Redo', marker: 'Marker', zoomIn: 'Zoom +', zoomOut: 'Zoom -', snap: 'Snap', add: 'Add...', addV: 'Video track', addA: 'Audio track', addText: 'Title', addLower: 'Lower third', addRect: 'Rectangle', addEllipse: 'Ellipse', addAdjust: 'Adjustment layer', media: 'Import media', file: 'File...', exSrt: 'Export subtitles SRT', exVtt: 'Export subtitles VTT', impSub: 'Import subtitles SRT/VTT', exEdl: 'Export EDL', exXml: 'Export FCP XML', impXml: 'Import EDL/XML (uses imported media)', exJson: 'Save project (JSON)', exFrame: 'Save current frame (PNG)', proxy: 'Generate video proxies', ruler: 'Timeline: use arrow keys to move the playhead', tab_ins: 'Inspector', tab_mix: 'Mixer', tab_scope: 'Scopes', preset: 'Export preset', lufs: 'Final loudness', noNorm: 'No normalization', rate: 'Bitrate mode', cbrNo: 'Automatic bitrate', bitrate: 'Bitrate in Mbps (empty = automatic)', export: 'Export video', cancel: 'Cancel', queue: 'Send to queue', progress: 'Export progress', pxy: 'Draft 360p', saved: 'Saved', saveErr: 'Could not save in this browser.', mute: 'Mute track', solo: 'Solo', lock: 'Lock track', badFile: 'Unsupported file type: ', tooBig: 'File too large: ', noVideo: 'File has no video: ', noCues: 'No subtitles found.', imported: '{n} clips imported', noMatch: 'No clip matched the imported media. Import the media first.', proxying: 'Generating proxy', proxyDone: 'Proxies ready: preview is lighter. Export uses the originals.', noQueue: 'R4.queue is not loaded.', queued: 'Queue: finished', queuedAdd: 'Project sent to the render queue.', download: 'Download',
+        selectHint: 'Select a clip to edit. Drag to move, edges to trim. Space plays, S splits.', bg: 'Background color', secClip: 'Clip', start: 'Start (s)', dur: 'Duration (s)', dup: 'Duplicate', key: 'Keyframe', secTf: 'Transform', posX: 'Position X', posY: 'Position Y', scale: 'Scale', rot: 'Rotation', opacity: 'Opacity', blend: 'Blend mode', speed: 'Speed (x)', reverse: 'Reverse', secTime: 'Blend and time', secAudio: 'Clip audio', volume: 'Volume', fadeIn: 'Fade in (s)', fadeOut: 'Fade out (s)', secText: 'Text', text: 'Text', size: 'Size', color: 'Color', anim: 'Animation', animNone: 'No animation', animType: 'Typewriter', animSlide: 'Slide up', secShape: 'Shape', fill: 'Fill', w: 'Width', h: 'Height', addFx: 'Add effect...', fxGrade: 'Color (exposure, contrast...)', fxChroma: 'Chroma key', fxBlur: 'Blur', fxSharpen: 'Sharpen', fxVig: 'Vignette', fxPix: 'Pixelate', fxGrain: 'Grain', fxGray: 'Black and white', fxInv: 'Invert', fxOff: 'Toggle', fxDel: 'Remove', keyColor: 'Key color', mask: 'Mask', maskNone: 'No mask', maskRect: 'Rectangle', maskEll: 'Ellipse', invert: 'Invert mask', secFx: 'Effects and mask', trNone: 'None', trCross: 'Dissolve', trWipe: 'Wipe', trSlide: 'Slide', transitionIn: 'In', transitionOut: 'Out', secTr: 'Transitions', stab: 'Stabilize', unstab: 'Remove stabilization', secAn: 'Analysis', analyzing: 'Analyzing motion...', pan: 'Pan', measure: 'Measure project loudness', measuring: 'Measuring...', noAudio: 'No audio in the project.', mixHint: 'To normalize on export, choose the final loudness (LUFS) next to Export.', scopeCv: 'Scope of the current frame', scWave: 'Waveform', scParade: 'RGB parade', scVec: 'Vectorscope', scHist: 'Histogram', title: 'Title', titleText: 'Your title here', lowerText: 'First Last' },
+      pianoroll: { bpm: 'Tempo (BPM)', grid: 'Grid', wave: 'Timbre', play: 'Play', stop: 'Stop', quant: 'Quantize', clear: 'Clear', del: 'Delete note', exportMidi: 'Export .mid', exportWav: 'Export WAV', importMidi: 'Import .mid', midiIn: 'MIDI keyboard', canvas: 'Note grid: arrows move the cursor, Enter adds or removes a note, Delete removes the selected one', empty: 'There are no notes.', big: 'MIDI file too large.', beat: 'beat', noMidi: 'This browser has no MIDI (use Chrome or Edge on HTTPS).', recorded: 'Notes recorded', midiOn: 'Listening to the MIDI keyboard: notes are recorded from now on.', noInput: 'No MIDI keyboard connected.', midiDenied: 'MIDI access denied.' }
+    } });
+  }
+  if (R4.i18n && R4.i18n.add) { R4.i18n.add('pt-BR', { r4: { pianoroll: {"toolDraw": "Desenhar", "toolSel": "Selecionar", "selAll": "Selecionar tudo", "dup": "Duplicar", "up": "Subir meio tom", "down": "Descer meio tom", "vel": "Intensidade das notas selecionadas", "copied": "notas copiadas", "oneSel": "nota selecionada", "manySel": "notas selecionadas", "del": "Apagar seleção", "canvas": "Grade de notas: clique e arraste no vazio para selecionar uma área; Delete apaga a seleção; Ctrl+A, C, X, V e D; setas movem; clique duplo cria uma nota", "inst_sine": "Seno", "inst_square": "Quadrada", "inst_saw": "Serra", "inst_triangle": "Triângulo", "inst_organ": "Órgão", "inst_piano": "Piano", "inst_strings": "Cordas", "inst_bass": "Baixo", "inst_pluck": "Violão", "inst_bell": "Sino", "inst_marimba": "Marimba", "inst_epiano": "Piano elétrico", "inst_flute": "Flauta", "inst_pad": "Pad", "inst_lead": "Lead", "inst_brass": "Metais", "inst_drums": "Bateria"} } }); R4.i18n.add('en', { r4: { pianoroll: {"toolDraw": "Draw", "toolSel": "Select", "selAll": "Select all", "dup": "Duplicate", "up": "Up a semitone", "down": "Down a semitone", "vel": "Velocity of selected notes", "copied": "notes copied", "oneSel": "note selected", "manySel": "notes selected", "del": "Delete selection", "canvas": "Note grid: drag on empty space to select an area; Delete removes the selection; Ctrl+A, C, X, V and D; arrows move; double-click adds a note", "inst_sine": "Sine", "inst_square": "Square", "inst_saw": "Saw", "inst_triangle": "Triangle", "inst_organ": "Organ", "inst_piano": "Piano", "inst_strings": "Strings", "inst_bass": "Bass", "inst_pluck": "Guitar", "inst_bell": "Bell", "inst_marimba": "Marimba", "inst_epiano": "Electric piano", "inst_flute": "Flute", "inst_pad": "Pad", "inst_lead": "Lead", "inst_brass": "Brass", "inst_drums": "Drums"} } }); }
+  if (R4.i18n && R4.i18n.add) {
+  R4.i18n.add('pt-BR', { r4: { pianoroll: {"inst_sine": "Seno", "inst_square": "Quadrada", "inst_saw": "Serra", "inst_triangle": "Triângulo", "inst_organ": "Órgão", "inst_piano": "Piano", "inst_epiano": "Piano elétrico", "inst_churchorgan": "Órgão de igreja", "inst_harpsichord": "Cravo", "inst_clavinet": "Clavinete", "inst_accordion": "Acordeão", "inst_guitar": "Violão (nylon)", "inst_guitarsteel": "Violão (aço)", "inst_guitarclean": "Guitarra limpa", "inst_guitarelec": "Guitarra distorcida", "inst_banjo": "Banjo", "inst_sitar": "Sitar", "inst_harp": "Harpa", "inst_violin": "Violino", "inst_cello": "Violoncelo", "inst_contrabass": "Contrabaixo acústico", "inst_bass": "Baixo", "inst_pluck": "Dedilhado", "inst_strings": "Orquestra de cordas", "inst_flute": "Flauta", "inst_recorder": "Flauta doce", "inst_panflute": "Flauta de pã", "inst_whistle": "Assobio", "inst_clarinet": "Clarinete", "inst_oboe": "Oboé", "inst_sax": "Saxofone", "inst_trumpet": "Trompete", "inst_trombone": "Trombone", "inst_horn": "Trompa", "inst_tuba": "Tuba", "inst_brass": "Metais", "inst_drums": "Bateria (mapa)", "inst_kick": "Bumbo", "inst_snare": "Caixa", "inst_hihat": "Chimbal fechado", "inst_openhat": "Chimbal aberto", "inst_clap": "Palmas", "inst_tom": "Tom", "inst_cowbell": "Sino de vaca", "inst_tambourine": "Pandeiro", "inst_cymbal": "Prato", "inst_conga": "Conga", "inst_timpani": "Tímpano", "inst_marimba": "Marimba", "inst_xylophone": "Xilofone", "inst_vibraphone": "Vibrafone", "inst_glockenspiel": "Glockenspiel", "inst_musicbox": "Caixa de música", "inst_kalimba": "Kalimba", "inst_steeldrum": "Steel drum", "inst_bell": "Sino", "inst_pad": "Pad", "inst_lead": "Lead", "inst_synthbass": "Baixo sintético", "inst_acid": "Acid", "inst_supersaw": "Supersaw", "inst_choir": "Coro", "inst_wobble": "Wobble", "inst_chiptune": "Chiptune", "legend": "Instrumentos nas notas", "voice": "Gravar voz", "voiceStop": "Parar gravação", "audioIn": "Importar áudio", "lane": "Áudio", "voiceName": "Voz", "audioAdded": "Áudio adicionado", "recording": "Gravando pelo microfone... clique em Parar gravação", "micDenied": "Acesso ao microfone negado.", "noAudio": "Áudio vazio.", "names": "Nomes das teclas", "flip": "Grave em cima", "n0": "Dó", "n1": "Dó#", "n2": "Ré", "n3": "Ré#", "n4": "Mi", "n5": "Fá", "n6": "Fá#", "n7": "Sol", "n8": "Sol#", "n9": "Lá", "n10": "Lá#", "n11": "Si", "beats": "tempos", "cat_basico": "Básico", "cat_teclas": "Teclas", "cat_cordas": "Cordas", "cat_sopro": "Sopro", "cat_metais": "Metais", "cat_percussao": "Percussão", "cat_sintetizador": "Sintetizadores"} } });
+  R4.i18n.add('en', { r4: { pianoroll: {"inst_sine": "Sine", "inst_square": "Square", "inst_saw": "Saw", "inst_triangle": "Triangle", "inst_organ": "Organ", "inst_piano": "Piano", "inst_epiano": "Electric piano", "inst_churchorgan": "Church organ", "inst_harpsichord": "Harpsichord", "inst_clavinet": "Clavinet", "inst_accordion": "Accordion", "inst_guitar": "Nylon guitar", "inst_guitarsteel": "Steel guitar", "inst_guitarclean": "Clean electric guitar", "inst_guitarelec": "Distorted guitar", "inst_banjo": "Banjo", "inst_sitar": "Sitar", "inst_harp": "Harp", "inst_violin": "Violin", "inst_cello": "Cello", "inst_contrabass": "Double bass", "inst_bass": "Bass", "inst_pluck": "Pluck", "inst_strings": "String ensemble", "inst_flute": "Flute", "inst_recorder": "Recorder", "inst_panflute": "Pan flute", "inst_whistle": "Whistle", "inst_clarinet": "Clarinet", "inst_oboe": "Oboe", "inst_sax": "Saxophone", "inst_trumpet": "Trumpet", "inst_trombone": "Trombone", "inst_horn": "French horn", "inst_tuba": "Tuba", "inst_brass": "Brass", "inst_drums": "Drums (map)", "inst_kick": "Kick", "inst_snare": "Snare", "inst_hihat": "Closed hi-hat", "inst_openhat": "Open hi-hat", "inst_clap": "Clap", "inst_tom": "Tom", "inst_cowbell": "Cowbell", "inst_tambourine": "Tambourine", "inst_cymbal": "Cymbal", "inst_conga": "Conga", "inst_timpani": "Timpani", "inst_marimba": "Marimba", "inst_xylophone": "Xylophone", "inst_vibraphone": "Vibraphone", "inst_glockenspiel": "Glockenspiel", "inst_musicbox": "Music box", "inst_kalimba": "Kalimba", "inst_steeldrum": "Steel drum", "inst_bell": "Bell", "inst_pad": "Pad", "inst_lead": "Lead", "inst_synthbass": "Synth bass", "inst_acid": "Acid", "inst_supersaw": "Supersaw", "inst_choir": "Choir", "inst_wobble": "Wobble", "inst_chiptune": "Chiptune", "legend": "Instruments in the notes", "voice": "Record voice", "voiceStop": "Stop recording", "audioIn": "Import audio", "lane": "Audio", "voiceName": "Voice", "audioAdded": "Audio added", "recording": "Recording from the microphone... click Stop recording", "micDenied": "Microphone access denied.", "noAudio": "Empty audio.", "names": "Key names", "flip": "Bass on top", "n0": "C", "n1": "C#", "n2": "D", "n3": "D#", "n4": "E", "n5": "F", "n6": "F#", "n7": "G", "n8": "G#", "n9": "A", "n10": "A#", "n11": "B", "beats": "beats", "cat_basico": "Basic", "cat_teclas": "Keys", "cat_cordas": "Strings", "cat_sopro": "Woodwind", "cat_metais": "Brass", "cat_percussao": "Percussion", "cat_sintetizador": "Synthesizers"} } });
+  }
+})(window.R4);
