@@ -2,7 +2,7 @@
 
 Biblioteca JavaScript/CSS sem dependências: interface, formulários, gráficos, tema e mídia (áudio, vídeo, imagem, piano roll, editor de linha do tempo). Funciona por JS (`R4.x(...)`) ou por tags `<r4-...>`. Tudo é código próprio, sem bibliotecas de terceiros.
 
-Demonstração de todos os elementos: _adicione aqui o link da vitrine_.
+Demonstração de todos os elementos: link da vitrine em breve.
 
 ## Uso rápido
 
