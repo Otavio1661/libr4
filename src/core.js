@@ -16,7 +16,7 @@
   'use strict';
 
   const R4 = global.R4 = {
-    version: '2.0.0',
+    version: '2.1.0',
     brand: 'R4 dev',
     registry: {},   // xtype -> { cls, meta }
     modules: {},    // nome  -> { api, meta }

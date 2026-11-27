@@ -452,6 +452,7 @@
     },
     /** Carrega File/Blob (ou data:/blob: gerado por você). Nunca rejeita: erros vão para o evento `error` e para a mensagem na tela. */
     async load(src) {
+      if (src && !isBlob(src) && src.blob && isBlob(src.blob)) src = src.blob;
       const tok = ++this._tok;
       this._unload(); this._err(''); this._busy(true);
       let p, im;
@@ -487,6 +488,8 @@
     setAspect(a) { this.aspect = a; if (this._img) this._set({}, true); return this; },
     setShape(s) { this.shape = s === 'circle' ? 'circle' : 'rect'; this._touch(false); return this; },
     reset() { if (this._img) { this._s = this._init(); this._set({}, true); } return this; },
+    /** Gera a imagem final, guarda em .blob e dispara done(cmp, blob, {format, width, height}): serve para ligar tags por r4-on (ex.: click:#ed.apply  /  done:#conv.load). */
+    async apply(o) { const b = await this.getBlob(o); this.blob = b; this.fire('done', this, b, { type: b.type, size: b.size, name: 'imagem' }); return b; },
     /** Imagem final (re-codificada: sem EXIF/GPS). Promise<Blob>. opções: format, quality, maxWidth, maxHeight, outputWidth, background. */
     async getBlob(o) {
       const im = this._img;
@@ -543,15 +546,16 @@
       { name: 'maxWidth / maxHeight / outputWidth', type: 'number (px)', default: '1600 / 1600 / 0', desc: 'Limites da saída (maior lado 1600 px por padrão). outputWidth fixa a largura. Nunca amplia acima do original.' },
       { name: 'maxSize / maxDimension / maxPixels', type: 'number', default: '15 MB / 12000 / 64000000', desc: 'Limites de segurança: tamanho do arquivo, lado máximo e megapixels. Dimensões são lidas do cabeçalho ANTES de decodificar.' },
       { name: 'height', type: 'number (px)', default: '360', desc: 'Altura da área de edição (limitada a 65% da altura da tela).' },
+      { name: 'apply(opções)', type: 'Promise<Blob>', desc: 'Como getBlob, mas guarda em .blob e dispara done(cmp, blob, info): r4-on="done:#conv.load" leva a imagem editada ao <r4-converter>; r4-click="download:#id" baixa.' },
       { name: 'getBlob(opções) / getFile(nome, opções)', type: 'Promise<Blob> / Promise<File>', desc: 'Imagem final. getFile saneia o nome (R4.sanitize.filename) e ajusta a extensão ao formato.' },
       { name: 'rotate(graus) / flip() / zoomTo(n) / reset() / setFine(graus) / setAspect(a) / setShape(s) / load(src) / destroy()', type: 'método', desc: 'Operações. destroy() libera o ImageBitmap, o canvas e todos os listeners.' },
       { name: 'getState() / getCrop() / isReady()', type: 'método', desc: 'Estado atual (rot, flip, fine, zoom, cx, cy), retângulo de origem do recorte e se há imagem pronta.' },
       { name: 'R4.imageeditor.open(arquivo, opções)', type: 'Promise<File | null>', desc: 'Abre o editor numa janela modal (Aplicar/Cancelar; Esc e clique fora cancelam; foco preso na janela). Resolve com o File editado ou null ao cancelar. Rejeita com mensagem clara se o arquivo for recusado (tipo, tamanho, dimensões).' },
       { name: 'R4.imageeditor.check(arquivo, opções)', type: 'Promise<{kind, w, h, size}>', desc: 'Só valida (assinatura, tamanho, dimensões), sem decodificar. Rejeita com Error (code: badType, svg, tooBig, dims, pixels, decode, badSrc).' },
       { name: 'filedrop edit="image"', type: 'integração', desc: 'No <r4-filedrop edit="image" accept="image/*" aspect="1">, cada imagem aceita passa pelo editor antes de entrar na lista; cancelar descarta. O upload() envia o arquivo já editado.' },
-      { name: 'ready / change / error', type: 'evento', desc: 'ready(cmp) depois de decodificar; change(cmp, estado) a cada ajuste (no máximo um por quadro); error(cmp, mensagem, código).' }
+      { name: 'ready / change / done / error', type: 'evento', desc: 'ready(cmp) depois de decodificar; done(cmp, blob, info) ao chamar apply(); change(cmp, estado) a cada ajuste (no máximo um por quadro); error(cmp, mensagem, código).' }
     ],
-    events: ['ready', 'change', 'error']
+    events: ['ready', 'change', 'done', 'error']
   });
   R4.registry.imageeditor.meta.playground = {
     html: '<r4-imageeditor{attrs}></r4-imageeditor>', cfg: {},

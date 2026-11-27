@@ -277,7 +277,7 @@
     const stopped = new Promise(r => { rec.onstop = r; }), release = () => stream.getTracks().forEach(t => t.stop());
     stream.getVideoTracks().forEach(t => t.addEventListener('ended', () => { if (rec.state !== 'inactive') rec.stop(); }));
     rec.start(500);
-    return { stream, get state() { return rec.state; }, async stop() { if (rec.state !== 'inactive') rec.stop(); await stopped; release(); return new Blob(parts, { type: rec.mimeType || 'video/webm' }); }, cancel() { if (rec.state !== 'inactive') rec.stop(); release(); } };
+    return { stream, get state() { return rec.state; }, pause() { if (rec.state === 'recording') rec.pause(); }, resume() { if (rec.state === 'paused') rec.resume(); }, async stop() { if (rec.state !== 'inactive') rec.stop(); await stopped; release(); return new Blob(parts, { type: rec.mimeType || 'video/webm' }); }, cancel() { if (rec.state !== 'inactive') rec.stop(); release(); } };
   }
   /** O que este navegador/endereço permite: o WebCodecs e o microfone só existem em HTTPS ou localhost (regra do navegador). */
   function support() {

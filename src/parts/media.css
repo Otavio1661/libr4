@@ -1,4 +1,4 @@
-/* libr4 / mídia: audioeditor, videoeditor, converter, piano */
+/* libr4 / mídia: audioeditor, videoeditor, converter, piano, recorder */
 .r4-md { display: flex; flex-direction: column; gap: 10px; color: inherit; font: inherit; max-width: 100%; }
 .r4-md-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .r4-md-btn { min-height: 44px; min-width: 44px; }
@@ -35,3 +35,11 @@
 .r4-md-white.r4-md-on { background: var(--r4-acc); color: #fff; }
 .r4-md-black.r4-md-on { background: var(--r4-acc); }
 @media (max-width: 560px) { .r4-md-keys { height: 130px; } }
+
+/* gravador */
+.r4-md-time { font-variant-numeric: tabular-nums; font-family: var(--r4-mono); font-size: 1.15em; min-width: 5ch; }
+.r4-md-meter { width: 100%; height: 28px; display: block; border: 1px solid var(--r4-line); border-radius: var(--r4-radius); }
+.r4-md-live { max-height: 240px; background: #000; }
+.r4-md-player { width: 100%; min-height: 44px; }
+.r4-md-recording { background: var(--r4-err); border-color: var(--r4-err); color: #fff; }
+.r4-md-rec[data-state="recording"] .r4-md-recstate { color: var(--r4-err); }

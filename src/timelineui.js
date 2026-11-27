@@ -478,9 +478,11 @@
     },
 
     /* ---------- importação ---------- */
+    load(f) { return this.addFiles(f); },
     async addFiles(files) {
       this._msg(''); const T = this.T;
-      for (const f of files) {
+      for (let f of [].concat(files)) {
+        if (f && !(f instanceof Blob) && f.blob instanceof Blob) f = f.blob;
         try {
           const kind = KIND_BY_TYPE(f); if (!kind) throw new Error(TT('badFile', 'Tipo de arquivo não suportado: ') + shown(f.name));
           if (f.size > 1024 * MB) throw new Error(TT('tooBig', 'Arquivo grande demais: ') + shown(f.name));
@@ -758,7 +760,7 @@
       { name: 'save', type: 'string', default: "''", desc: 'Identificador para salvar sozinho no navegador (IndexedDB) com histórico de versões.' },
       { name: 'pps / previewWidth', type: 'px/s / px', default: '80 / 640', desc: 'Zoom inicial da linha do tempo e largura da pré-visualização.' },
       { name: 'project', type: 'R4.timeline.create()', default: 'null', desc: 'Projeto existente para editar.' },
-      { name: 'T / addFiles(files) / seek(t) / select(id) / exportar()', type: 'método', desc: 'T é o projeto (R4.timeline); importar arquivos, mover o cursor, selecionar clipe, exportar.' },
+      { name: 'T / addFiles(files) / load(arquivo) / seek(t) / select(id) / exportar()', type: 'método', desc: 'T é o projeto (R4.timeline); importar arquivos (File, Blob ou { blob } de outra tag, ex.: r4-on="done:#tl.load"), mover o cursor, selecionar clipe, exportar.' },
       { name: 'change / select / import / done / error', type: 'evento', desc: 'Disparados ao editar, selecionar, importar, concluir exportação e em erros.' }
     ],
     events: ['change', 'select', 'import', 'done', 'end', 'error']
@@ -933,8 +935,9 @@
     },
     _legend(used) { const key = Array.from(used.keys()).join(','); if (key === this._legKey) return; this._legKey = key; this.leg.textContent = ''; used.forEach((col, w) => { const b = el('span', { class: 'r4-pr-chip', title: PT('inst_' + w, w) }, [el('i', { style: 'background:' + col }), el('span', { text: PT('inst_' + w, w) })]); this.leg.append(b); }); },
     quantize(g) { g = g || this.grid; for (const n of this.notes) { n.start = Math.round(n.start / g) * g; n.dur = Math.max(g, Math.round(n.dur / g) * g); } this._changed(); return this; },
-    load(bytes) { const m = R4.music.readMIDI(bytes); this.notes = m.notes.slice(0, 5000).map(n => ({ note: Math.round(R4.music.note(n.note).midi), start: n.start, dur: Math.max(0.0625, n.dur), vel: n.vel == null ? 0.8 : n.vel, wave: this.wave })); this.bpm = m.bpm || this.bpm; this.bBpm.value = String(this.bpm); const end = this.notes.reduce((e, n) => Math.max(e, n.start + n.dur), 0), lo = Math.min(this.low, ...this.notes.map(n => n.note)), hi = Math.max(this.high, ...this.notes.map(n => n.note)); this.bars = clamp(Math.ceil(end / 4) || this.bars, 1, 64); this.low = clamp(lo, 0, 126); this.high = clamp(hi, this.low + 1, 127); this._resize(); this._sels.clear(); this._sync(); this._changed(); return this; },
-    async _wav() { const a = this._mixAll(); if (!a) return this._msg(PT('empty', 'Não há notas.')); const b = await R4.audio.encode(a, 'wav'); this._dl(b, 'musica.wav'); },
+    load(bytes) { if (bytes && bytes.blob instanceof Blob) bytes = bytes.blob; if (bytes instanceof Blob) return bytes.arrayBuffer().then(b => this.load(new Uint8Array(b))); const m = R4.music.readMIDI(bytes); this.notes = m.notes.slice(0, 5000).map(n => ({ note: Math.round(R4.music.note(n.note).midi), start: n.start, dur: Math.max(0.0625, n.dur), vel: n.vel == null ? 0.8 : n.vel, wave: this.wave })); this.bpm = m.bpm || this.bpm; this.bBpm.value = String(this.bpm); const end = this.notes.reduce((e, n) => Math.max(e, n.start + n.dur), 0), lo = Math.min(this.low, ...this.notes.map(n => n.note)), hi = Math.max(this.high, ...this.notes.map(n => n.note)); this.bars = clamp(Math.ceil(end / 4) || this.bars, 1, 64); this.low = clamp(lo, 0, 126); this.high = clamp(hi, this.low + 1, 127); this._resize(); this._sels.clear(); this._sync(); this._changed(); return this; },
+    async getBlob(format) { const a = this._mixAll(); if (!a) throw new Error(PT('empty', 'Não há notas.')); return R4.audio.encode(a, format || 'wav'); },
+    async _wav() { let b; try { b = await this.getBlob('wav'); } catch (e) { return this._msg(e.message); } this.blob = b; this._dl(b, 'musica.wav'); this.fire('done', this, b, { format: 'wav', name: 'musica' }); },
     _dl(blob, name) { if (!blob) return; const a = el('a', { href: URL.createObjectURL(blob), download: name }); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); },
     async play() {
       this.stop(); const a = this._mixAll(); if (!a) { this._msg(PT('empty', 'Não há notas.')); return this; } this._msg('');
@@ -982,10 +985,11 @@
       { name: 'names / flip', type: 'boolean', default: 'true / false', desc: 'names mostra o nome de cada tecla (Dó, Ré, Mi... em português; C, D, E... em inglês) com a oitava; flip coloca os graves em cima. Ambos têm botão na barra.' },
       { name: 'fit', type: 'boolean', default: 'true', desc: 'A grade se estica para ocupar toda a largura disponível.' },
       { name: 'wave / grid', type: 'string / número', default: "'piano' / 0.25", desc: 'Timbre e divisão da grade (em tempos).' },
-      { name: 'notes / play() / stop() / quantize(g) / load(bytes)', type: 'método', desc: 'Lista atual, tocar, parar, quantizar e abrir um .mid.' },
-      { name: 'change', type: 'evento', desc: 'Disparado a cada edição de notas.' }
+      { name: 'notes / play() / stop() / quantize(g) / load(bytes | Blob)', type: 'método', desc: 'Lista atual, tocar, parar, quantizar e abrir um .mid (bytes, File/Blob ou { blob } de outra tag).' },
+      { name: 'getBlob(formato) / blob', type: 'método', desc: 'Gera o áudio da música (padrão WAV). blob guarda o último WAV exportado.' },
+      { name: 'change / done', type: 'evento', desc: 'change a cada edição de notas; done(cmp, blob, {format}) ao exportar o WAV: r4-on="done:#editor.load" leva a música ao <r4-audioeditor>.' }
     ],
-    events: ['change']
+    events: ['change', 'done']
   });
   R4.registry.pianoroll.meta.playground = { html: '<r4-pianoroll{attrs}></r4-pianoroll>', cfg: {}, controls: { bpm: 120, bars: 4 } };
   if (R4.quickMap) { R4.quickMap.pianoroll = (a, b) => (a && typeof a === 'object' && !Array.isArray(a) ? a : Object.assign({ notes: a || [] }, b)); R4.quickMap.timelineeditor = (a, b) => (a && typeof a === 'object' ? a : Object.assign({}, b)); }

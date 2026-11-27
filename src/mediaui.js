@@ -7,6 +7,7 @@
  *   <r4-videoeditor>  editor de vídeo: pré-visualização, trecho, tamanho, giro, velocidade, filtro, mudo, exportar MP4/WebM
  *   <r4-converter>    conversor de arquivos (arrastar/soltar, escolhe o formato, baixa o resultado)
  *   <r4-piano>        teclado de piano (mouse, toque e teclado do computador)
+ *   <r4-recorder>     gravador de microfone, tela ou câmera (pausar, medidor de nível, lista de gravações)
  * JS: R4.audioeditor('#alvo', { src }), R4.videoeditor(...), R4.converter(...), R4.piano(...)
  * Arquivos do usuário são dados não confiáveis: nomes só entram como texto, tipos conferidos pelo conteúdo, limites de tamanho.
  * ============================================
@@ -33,6 +34,8 @@
   }
   const need = (mod, label) => { if (!R4[mod]) throw new Error('Módulo R4.' + mod + ' não carregado (' + label + ').'); };
   const MB = 1048576;
+  /** Aceita o resultado de outro componente ({ blob, name }) no lugar do arquivo: permite ligar tags por r4-on. */
+  const asFile = s => { if (s && !(s instanceof Blob) && s.blob instanceof Blob) { const b = s.blob; if (s.name && !b.name) { try { return new File([b], s.name, { type: b.type }); } catch (e) { return b; } } return b; } return s; };
 
   /* ================= <r4-audioeditor> ================= */
   R4.define('audioeditor', {
@@ -122,7 +125,7 @@
     undo() { if (!this._hist.length) return this; this._redo.push(this._a); this._setAudio(this._hist.pop(), true); this.fire('change', this, this.getInfo()); return this; },
     redo() { if (!this._redo.length) return this; this._hist.push(this._a); this._setAudio(this._redo.pop(), true); this.fire('change', this, this.getInfo()); return this; },
     async load(src) {
-      const tok = ++this._tok; this._msg('');
+      src = asFile(src); const tok = ++this._tok; this._msg('');
       try {
         if (src && src.size > this.maxSize) throw new Error(TT('audioeditor', 'tooBig', 'Arquivo grande demais.'));
         let a;
@@ -135,6 +138,8 @@
     },
     getAudio() { return this._a; }, getInfo() { return { duration: this._dur(), sampleRate: this._a ? this._a.sampleRate : 0, channels: this._a ? this._a.channels.length : 0, selection: this._sel }; }, isReady() { return !!this._a; },
     async getBlob(format, o) { if (!this._a) throw new Error(TT('audioeditor', 'noAudio', 'Nenhum áudio carregado.')); return R4.audio.encode(this._a, format || this.fmt.value, o); },
+    /** Gera o arquivo no formato escolhido, guarda em .blob e dispara done(cmp, blob, info) (para r4-on). */
+    async apply(format) { const f = format || this.fmt.value, b = await this.getBlob(f); this.blob = b; this.fire('done', this, b, { format: f, name: this._name || 'audio', size: b.size, type: b.type }); return b; },
     async download(format) {
       try { this._msg(''); const f = format || this.fmt.value, b = await this.getBlob(f); R4.files ? R4.files.download(b, (this._name || 'audio') + '.' + f, b.type) : null; }
       catch (e) { this._msg(e.message); this.fire('error', this, e.message, e.code); }
@@ -172,11 +177,12 @@
     props: [
       { name: 'src', type: 'File | Blob | áudio', default: 'null', desc: 'Arquivo a editar. Sem src, mostra "Escolher áudio" e aceita arrastar/soltar.' },
       { name: 'format / height / maxSize / name', type: 'string / px / bytes', default: "'wav' / 160 / 200 MB / 'audio'", desc: 'Formato inicial de exportação, altura da onda, limite do arquivo e nome-base do download.' },
-      { name: 'load(src) / getAudio() / getBlob(formato) / download(formato)', type: 'método', desc: 'Carregar, ler o áudio editado, gerar o arquivo e baixar.' },
+      { name: 'load(src) / getAudio() / getBlob(formato) / download(formato)', type: 'método', desc: 'Carregar (File, Blob ou { blob, name } de outra tag: r4-on="done:#ed.load"), ler o áudio editado, gerar o arquivo e baixar.' },
       { name: 'play() / stop() / undo() / redo() / destroy()', type: 'método', desc: 'Controle. destroy() para o som e libera os listeners.' },
-      { name: 'ready / change / error', type: 'evento', desc: 'ready(cmp) depois de carregar; change(cmp, info) a cada edição; error(cmp, mensagem, código).' }
+      { name: 'apply(formato)', type: 'Promise<Blob>', desc: 'Gera o arquivo, guarda em .blob e dispara done(cmp, blob, info): r4-on="done:#conv.load" ou r4-click="download:#id".' },
+      { name: 'ready / change / done / error', type: 'evento', desc: 'ready(cmp) depois de carregar; change(cmp, info) a cada edição; done(cmp, blob, info) após apply(); error(cmp, mensagem, código).' }
     ],
-    events: ['ready', 'change', 'error']
+    events: ['ready', 'change', 'done', 'error']
   });
   R4.registry.audioeditor.meta.playground = { html: '<r4-audioeditor{attrs}></r4-audioeditor>', cfg: {}, controls: { format: ['wav', 'flac', 'aiff', 'opus', 'ogg'], height: 160 } };
   if (R4.quickMap) R4.quickMap.audioeditor = (a, b) => (a && typeof a === 'object' && !(a instanceof Blob) && !a.channels ? a : Object.assign({ src: a }, b));
@@ -230,7 +236,7 @@
     _msg(m) { this.msgEl.textContent = m || ''; this.msgEl.hidden = !m; },
     _range() { this.oFrom.textContent = fmtT(+this.rFrom.value); this.oTo.textContent = fmtT(+this.rTo.value); },
     async load(src) {
-      const tok = ++this._tok; this._msg('');
+      src = asFile(src); const tok = ++this._tok; this._msg('');
       try {
         if (!(src instanceof Blob)) throw new Error(TT('videoeditor', 'badSrc', 'Use um arquivo de vídeo.'));
         if (src.size > this.maxSize) throw new Error(TT('videoeditor', 'tooBig', 'Arquivo grande demais.'));
@@ -249,7 +255,7 @@
     async getBlob(extra) {
       if (!this._file) throw new Error(TT('videoeditor', 'noVideo', 'Nenhum vídeo carregado.'));
       this._abort = new AbortController(); this._busy = true; this._ctl(); this._msg(''); this.prog.value = 0;
-      try { const r = await R4.video.transcode(this._file, Object.assign(this.options(), extra, { signal: this._abort.signal, onProgress: p => { this.prog.value = p; } })); this.fire('done', this, r.info); return r.blob; }
+      try { const r = await R4.video.transcode(this._file, Object.assign(this.options(), extra, { signal: this._abort.signal, onProgress: p => { this.prog.value = p; } })); this.blob = r.blob; this.fire('done', this, Object.assign({}, r.info, { blob: r.blob })); return r.blob; }
       catch (e) { if (e.code !== 'abort') { this._msg(e.message); this.fire('error', this, e.message, e.code); } else this._msg(TT('videoeditor', 'canceled', 'Exportação cancelada.')); throw e; }
       finally { this._busy = null; this._abort = null; if (!this._destroyed) this._ctl(); }
     },
@@ -270,7 +276,7 @@
       { name: 'src', type: 'File | Blob', default: 'null', desc: 'Vídeo a editar. Sem src, mostra "Escolher vídeo" e aceita arrastar/soltar.' },
       { name: 'format / height / maxSize / name', type: 'string / px / bytes', default: "'mp4' / 280 / 500 MB / 'video'", desc: 'Formato inicial, altura da pré-visualização, limite de tamanho e nome-base.' },
       { name: 'load(src) / options() / exportar() / getBlob(extra) / download()', type: 'método', desc: 'Carregar, ler as opções escolhidas, exportar (mostra o resultado com link de download), só gerar o arquivo ou baixar direto. extra é repassado para R4.video.transcode (ex.: draw, bitrate).' },
-      { name: 'ready / done / error', type: 'evento', desc: 'ready(cmp, info) depois de abrir; done(cmp, info) ao exportar; error(cmp, mensagem, código).' }
+      { name: 'ready / done / error', type: 'evento', desc: 'ready(cmp, info) depois de abrir; done(cmp, info) ao exportar (info.blob traz o arquivo; também em .blob); error(cmp, mensagem, código).' }
     ],
     events: ['ready', 'done', 'error']
   });
@@ -295,9 +301,11 @@
       on(this.drop, 'keydown', ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); this.fileIn.click(); } }); dropZone(this.drop, f => this.add(f));
     },
     _msg(m) { this.msgEl.textContent = m || ''; this.msgEl.hidden = !m; },
+    load(f) { return this.add(f); },
     async add(files) {
       this._msg('');
-      for (const f of [].concat(files)) {
+      for (let f of [].concat(files)) {
+        f = asFile(f); if (!f) continue;
         if (this._items.length >= this.maxFiles) { this._msg(TT('converter', 'tooMany', 'Máximo de arquivos atingido: ' + this.maxFiles, { n: this.maxFiles })); break; }
         if (f.size > this.maxSize) { this._msg(TT('converter', 'tooBig', 'Arquivo grande demais: ') + shown(f.name)); continue; }
         const it = { id: ++this._seq, file: f, state: 'idle' }; this._items.push(it); this._row(it);
@@ -339,13 +347,157 @@
     props: [
       { name: 'accept / multiple / maxFiles / maxSize', type: 'string / boolean / number / bytes', default: "'' / true / 20 / 500 MB", desc: 'Filtro do seletor, vários arquivos, limites.' },
       { name: 'to', type: 'string', default: "''", desc: 'Formato de saída automático (ex.: to="mp3" não existe; to="wav" converte ao soltar o arquivo, quando possível).' },
-      { name: 'add(arquivos) / convert(id, formato)', type: 'método', desc: 'Adicionar arquivos por código e converter um item da lista.' },
+      { name: 'add(arquivos) / load(arquivo) / convert(id, formato)', type: 'método', desc: 'Adicionar arquivos por código, ou por outra tag com r4-on="done:#conv.load" (aceita também { blob, name }), e converter um item da lista.' },
       { name: 'done / error', type: 'evento', desc: 'done(cmp, { blob, name, from, to }) por arquivo; error(cmp, mensagem, código).' }
     ],
     events: ['done', 'error']
   });
   R4.registry.converter.meta.playground = { html: '<r4-converter{attrs}></r4-converter>', cfg: {}, controls: { multiple: true, maxFiles: 20 } };
   if (R4.quickMap) R4.quickMap.converter = (a, b) => (a && typeof a === 'object' ? a : Object.assign({ to: a || '' }, b));
+
+  /* ================= <r4-recorder> ================= */
+  R4.define('recorder', {
+    config: { source: 'mic', format: 'wav', maxTakes: 20, maxSeconds: 0, name: 'gravacao', meter: true },
+    build() {
+      const N = 'recorder'; this._offs = []; this._takes = []; this._seq = 0; this._acc = 0; this._t0 = 0; this._state = 'idle';
+      this.bRec = btn('r4-md-rec-go', N, 'record', 'Gravar', true); this.bPause = btn('', N, 'pause', 'Pausar'); this.bStop = btn('', N, 'stop', 'Parar');
+      this.bPause.disabled = this.bStop.disabled = true;
+      this.timeEl = el('span', { class: 'r4-md-time', role: 'timer', 'aria-live': 'off', text: '0:00.0' });
+      this.stateEl = el('span', { class: 'r4-md-meta r4-md-recstate' });
+      this.cv = el('canvas', { class: 'r4-md-meter', height: 28, 'aria-hidden': 'true' });
+      this.live = el('video', { class: 'r4-md-video r4-md-live', muted: true, playsinline: true, hidden: true }); this.live.muted = true;
+      this.msgEl = el('div', { class: 'r4-md-msg', role: 'alert', hidden: true });
+      this.list = el('ul', { class: 'r4-md-list', 'aria-live': 'polite' });
+      const bar = el('div', { class: 'r4-md-bar' }, [this.bRec, this.bPause, this.bStop, this.timeEl, this.stateEl]);
+      return el('div', { class: 'r4-md r4-md-rec' }, [bar, this.meter ? this.cv : null, this.live, this.msgEl, this.list].filter(Boolean));
+    },
+    afterRender() {
+      const on = (t, e, f) => { t.addEventListener(e, f); this._offs.push(() => t.removeEventListener(e, f)); };
+      on(this.bRec, 'click', () => { this.start().catch(() => {}); }); on(this.bStop, 'click', () => { this.stop().catch(() => {}); }); on(this.bPause, 'click', () => this.pause());
+      this._sync(); this._drawMeter();
+    },
+    _msg(m) { this.msgEl.textContent = m || ''; this.msgEl.hidden = !m; },
+    _src() { const s = String(this.source || 'mic').toLowerCase(); return s === 'screen' || s === 'camera' ? s : 'mic'; },
+    getState() { return this._state; },
+    _elapsed() { return this._acc + (this._state === 'recording' ? (performance.now() - this._t0) / 1000 : 0); },
+    _sync() {
+      const s = this._state, busy = s !== 'idle' && s !== 'starting';
+      this.bRec.disabled = s !== 'idle'; this.bStop.disabled = !busy; this.bPause.disabled = !busy;
+      tx(this.bPause, 'r4.recorder.' + (s === 'paused' ? 'resume' : 'pause'), s === 'paused' ? 'Continuar' : 'Pausar');
+      this.bRec.classList.toggle('r4-md-recording', s === 'recording');
+      this.stateEl.textContent = s === 'recording' ? TT('recorder', 'recording', 'Gravando') : s === 'paused' ? TT('recorder', 'paused', 'Pausado') : s === 'starting' ? TT('recorder', 'starting', 'Aguardando permissão...') : '';
+      this.el && this.el.setAttribute('data-state', s);
+    },
+    _tick() {
+      cancelAnimationFrame(this._raf); if (this._destroyed) return;
+      this.timeEl.textContent = fmtT(this._elapsed());
+      if (this.maxSeconds > 0 && this._state === 'recording' && this._elapsed() >= this.maxSeconds) { this.stop().catch(() => {}); return; }
+      if (this._state !== 'idle') this._raf = requestAnimationFrame(() => this._tick());
+    },
+    _fail(e) {
+      const n = e && e.name, code = n === 'NotAllowedError' || n === 'SecurityError' ? 'denied' : n === 'NotFoundError' || n === 'OverconstrainedError' ? 'noDevice' : (e && e.code) || 'error';
+      const fb = { denied: 'Permissão negada. Libere o acesso no navegador e tente de novo.', noDevice: 'Nenhum dispositivo encontrado (microfone, câmera ou tela).', unsupported: 'Este navegador não grava mídia.', insecure: 'A gravação exige HTTPS (ou localhost).', error: (e && e.message) || 'Não foi possível gravar.' };
+      const m = TT('recorder', code, fb[code] || fb.error); this._msg(m); this.fire('error', this, m, code); return m;
+    },
+    async start() {
+      if (this._destroyed || this._state !== 'idle') return this;
+      this._msg(''); const src = this._src();
+      if (typeof window !== 'undefined' && window.isSecureContext === false) { this._fail({ code: 'insecure' }); throw new Error('insecure'); }
+      if (!navigator.mediaDevices || typeof MediaRecorder === 'undefined') { this._fail({ code: 'unsupported' }); throw new Error('unsupported'); }
+      if (this._takes.length >= this.maxTakes) { const m = TT('recorder', 'tooMany', 'Máximo de gravações atingido.'); this._msg(m); this.fire('error', this, m, 'limit'); return this; }
+      this._state = 'starting'; this._sync();
+      try {
+        need('audio', 'recorder');
+        if (src === 'mic') this._rec = await R4.audio.record(); else { need('video', 'recorder'); this._rec = await R4.video.record({ source: src }); }
+      } catch (e) { this._state = 'idle'; this._sync(); this._fail(e); throw e; }
+      if (this._destroyed) { this._rec.cancel(); return this; }
+      this._src_ = src; this._acc = 0; this._t0 = performance.now(); this._state = 'recording';
+      const st = this._rec.stream; if (src !== 'mic' && st) { this.live.srcObject = st; this.live.hidden = false; this.live.play && this.live.play().catch(() => {}); }
+      if (src !== 'mic' && st) st.getVideoTracks().forEach(t => t.addEventListener('ended', () => { if (this._state !== 'idle') this.stop().catch(() => {}); }));
+      this._meterOpen(st); this._sync(); this._tick(); this.fire('start', this);
+      return this;
+    },
+    pause() {
+      if (!this._rec) return this;
+      if (this._state === 'recording') { this._acc = this._elapsed(); this._rec.pause(); this._state = 'paused'; this.fire('pause', this); }
+      else if (this._state === 'paused') { this._t0 = performance.now(); this._rec.resume(); this._state = 'recording'; this.fire('resume', this); }
+      this._sync(); this._tick(); return this;
+    },
+    async stop() {
+      const rec = this._rec; if (!rec || this._state === 'idle') return null;
+      const dur = this._elapsed(), src = this._src_; this._rec = null; this._state = 'idle'; this._meterClose(); this.live.hidden = true; this.live.srcObject = null; this._sync(); this.timeEl.textContent = fmtT(dur);
+      let blob;
+      try {
+        if (src === 'mic') {
+          const raw = await rec.stopBlob(); blob = raw;
+          if (this.format !== 'raw' && R4.audio && raw.size) { try { blob = await R4.audio.encode(await R4.audio.decode(raw), this.format || 'wav'); } catch (e) { blob = raw; } }
+        } else blob = await rec.stop();
+      } catch (e) { this._fail(e); throw e; }
+      if (this._destroyed) return blob;
+      if (!blob || !blob.size) { const m = TT('recorder', 'empty', 'A gravação ficou vazia.'); this._msg(m); this.fire('error', this, m, 'empty'); return null; }
+      const info = { source: src, duration: dur, size: blob.size, type: blob.type, name: this.name + '-' + (this._seq + 1) };
+      const take = Object.assign({ id: ++this._seq, blob, url: URL.createObjectURL(blob) }, info); this._takes.push(take); this.blob = blob; this._row(take);
+      this.fire('stop', this); this.fire('done', this, blob, info);
+      return blob;
+    },
+    getBlob() { return this.blob || null; },
+    discard(id) {
+      const i = this._takes.findIndex(t => t.id === id); if (i < 0) return this;
+      const t = this._takes[i]; this._takes.splice(i, 1); URL.revokeObjectURL(t.url);
+      const li = this.list.querySelector('[data-id="' + id + '"]'); if (li) li.remove();
+      if (this.blob === t.blob) this.blob = this._takes.length ? this._takes[this._takes.length - 1].blob : null; return this;
+    },
+    takes() { return this._takes.map(t => ({ id: t.id, name: t.name, duration: t.duration, size: t.size, type: t.type, source: t.source, blob: t.blob })); },
+    _row(t) {
+      const li = el('li', { class: 'r4-md-item', 'data-id': String(t.id) });
+      const media = el(t.source === 'mic' ? 'audio' : 'video', { class: t.source === 'mic' ? 'r4-md-player' : 'r4-md-video', controls: true, preload: 'metadata', src: t.url });
+      tx(media, 'r4.recorder.player', 'Reproduzir gravação', 'aria-label');
+      const ext = (t.type.split(';')[0].split('/')[1] || 'bin').replace('x-wav', 'wav').replace('mpeg', 'mp3');
+      const a = el('a', { class: 'r4-btn r4-md-btn', href: t.url, download: t.name + '.' + ext, rel: 'noopener' }); tx(a, 'r4.recorder.download', 'Baixar');
+      const rm = btn('r4-md-x', 'recorder', 'discard', 'Descartar'); rm.addEventListener('click', () => this.discard(t.id));
+      li.append(el('div', { class: 'r4-md-itemhead' }, [el('span', { class: 'r4-md-name', text: shown(t.name) }), el('span', { class: 'r4-md-meta', text: fmtT(t.duration) + ' · ' + R4.util.bytes(t.size) + ' · ' + ext.toUpperCase() })]), media, el('div', { class: 'r4-md-bar' }, [a, rm]));
+      this.list.append(li);
+    },
+    _meterOpen(stream) {
+      this._meterClose(); if (!this.meter || !stream || !stream.getAudioTracks().length) return;
+      try { const AC = window.AudioContext || window.webkitAudioContext, ac = new AC(), src = ac.createMediaStreamSource(stream), an = ac.createAnalyser(); an.fftSize = 512; src.connect(an); this._ac = ac; this._an = an; this._lv = new Uint8Array(an.fftSize); } catch (e) { this._ac = null; }
+    },
+    _meterClose() { if (this._ac) { try { this._ac.close(); } catch (e) { /* já fechado */ } } this._ac = null; this._an = null; this._level = 0; },
+    level() { return this._level || 0; },
+    _drawMeter() {
+      if (this._destroyed || !this.meter) return;
+      const cv = this.cv, w = cv.clientWidth || 300, dpr = window.devicePixelRatio || 1;
+      if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(28 * dpr); }
+      const cx = cv.getContext('2d'), cs = getComputedStyle(cv), W = cv.width, H = cv.height;
+      if (this._an && this._state === 'recording') {
+        this._an.getByteTimeDomainData(this._lv); let pk = 0; for (let i = 0; i < this._lv.length; i++) pk = Math.max(pk, Math.abs(this._lv[i] - 128));
+        const v = Math.min(1, pk / 128); this._level = v; this._smooth = Math.max(v, (this._smooth || 0) * 0.9);
+      } else { this._level = 0; this._smooth = (this._smooth || 0) * 0.85; }
+      cx.clearRect(0, 0, W, H); cx.fillStyle = cs.getPropertyValue('--r4-line').trim() || '#ccc'; cx.fillRect(0, 0, W, H);
+      const lv = this._smooth || 0; cx.fillStyle = lv > 0.9 ? (cs.getPropertyValue('--r4-err').trim() || '#e03131') : (cs.getPropertyValue('--r4-acc').trim() || '#3b5bdb'); cx.fillRect(0, 0, W * lv, H);
+      this._mraf = requestAnimationFrame(() => this._drawMeter());
+    },
+    destroy() {
+      const was = this._destroyed; R4.Component.prototype.destroy.call(this); if (was || !this._destroyed) return this;
+      cancelAnimationFrame(this._raf); cancelAnimationFrame(this._mraf); if (this._rec) { try { this._rec.cancel(); } catch (e) { /* já parou */ } this._rec = null; }
+      this._meterClose(); (this._offs || []).splice(0).forEach(f => f()); this._takes.forEach(t => URL.revokeObjectURL(t.url)); this._takes = []; this.blob = null; return this;
+    }
+  }, {
+    title: 'recorder', group: 'Mídia',
+    description: 'Gravador no navegador, sem bibliotecas: microfone (padrão), tela ou câmera. Botões gravar, pausar e parar, cronômetro, medidor de nível ao vivo, lista de gravações com player, baixar e descartar. Pede permissão ao usuário e avisa com clareza quando não há microfone, a permissão foi negada ou a página não é segura (exige HTTPS ou localhost). Nada é enviado a servidor.',
+    props: [
+      { name: 'source', type: "'mic' | 'screen' | 'camera'", default: "'mic'", desc: 'O que gravar. mic gera áudio (WAV por padrão); screen e camera geram vídeo WebM/MP4 pelo navegador.' },
+      { name: 'format', type: "'wav' | 'flac' | 'opus' | 'raw'", default: "'wav'", desc: 'Formato do áudio do microfone (raw guarda o que o navegador gravou, sem converter).' },
+      { name: 'maxTakes / maxSeconds', type: 'número', default: '20 / 0', desc: 'Máximo de gravações na lista e duração máxima de cada uma em segundos (0 = sem limite).' },
+      { name: 'meter / name', type: 'boolean / string', default: "true / 'gravacao'", desc: 'Medidor de nível ao vivo e nome-base dos arquivos.' },
+      { name: 'start() / pause() / stop() / getBlob() / getState() / discard(id) / takes() / level()', type: 'método', desc: 'start pede permissão e começa; pause alterna pausa/continuar; stop encerra e devolve o Blob; getBlob e .blob dão a última gravação; takes() lista todas; level() é o nível atual (0 a 1).' },
+      { name: 'start / pause / resume / stop / done / error', type: 'evento', desc: 'done(cmp, blob, {source, duration, size, type, name}) a cada gravação pronta: r4-on="done:#ed.load" manda para um <r4-audioeditor id="ed">. error(cmp, mensagem, código): denied, noDevice, unsupported, insecure, empty, limit.' },
+      { name: 'r4-click="download:#id"', type: 'ação', desc: 'Baixa a última gravação.' }
+    ],
+    events: ['start', 'pause', 'resume', 'stop', 'done', 'error']
+  });
+  R4.registry.recorder.meta.playground = { html: '<r4-recorder{attrs}></r4-recorder>', cfg: {}, controls: { source: ['mic', 'screen', 'camera'], format: ['wav', 'flac', 'opus', 'raw'], maxSeconds: 0 } };
+  if (R4.quickMap) R4.quickMap.recorder = (a, b) => (a && typeof a === 'object' ? a : Object.assign({ source: a || 'mic' }, b));
 
   /* ================= <r4-piano> ================= */
   R4.define('piano', {
@@ -403,11 +555,13 @@
       audioeditor: { choose: 'Escolher áudio', empty: 'Nenhum áudio carregado. Arraste um arquivo ou', play: 'Tocar', pause: 'Parar', stop: 'Parar', trim: 'Manter seleção', cut: 'Remover seleção', fadeIn: 'Fade-in', fadeOut: 'Fade-out', normalize: 'Normalizar', reverse: 'Inverter', silence: 'Tirar silêncios', undo: 'Desfazer', redo: 'Refazer', gain: 'Ganho (dB)', apply: 'Aplicar ganho', format: 'Formato de saída', export: 'Baixar', area: 'Forma de onda: arraste para selecionar um trecho; espaço toca; setas movem a seleção', tooBig: 'Arquivo grande demais.', noAudio: 'Nenhum áudio carregado.' },
       videoeditor: { choose: 'Escolher vídeo', empty: 'Nenhum vídeo carregado. Arraste um arquivo ou', from: 'Início', to: 'Fim', format: 'Formato de saída', size: 'Tamanho', rotate: 'Girar', speed: 'Velocidade', filter: 'Filtro', mute: 'Sem áudio', flip: 'Espelhar', export: 'Exportar', result: 'Resultado', resultPlayer: 'Pré-visualização do resultado', download: 'Baixar', cancel: 'Cancelar', player: 'Pré-visualização do vídeo', progress: 'Progresso da exportação', original: 'Original', noFilter: 'Sem filtro', gray: 'Preto e branco', bright: 'Mais claro', contrast: 'Mais contraste', blur: 'Desfoque', badSrc: 'Use um arquivo de vídeo.', tooBig: 'Arquivo grande demais.', noVideo: 'O arquivo não tem vídeo.', canceled: 'Exportação cancelada.' },
       converter: { choose: 'Escolher arquivos', drop: 'Arraste arquivos aqui ou', dropLabel: 'Área para soltar arquivos', remove: 'Remover', convert: 'Converter', to: 'Converter para', target: 'Converter para', working: 'Convertendo...', download: 'Baixar', noTarget: 'Sem conversões disponíveis para este arquivo neste navegador.', tooBig: 'Arquivo grande demais: ', tooMany: 'Máximo de {n} arquivos atingido.' },
+      recorder: { record: 'Gravar', pause: 'Pausar', resume: 'Continuar', stop: 'Parar', recording: 'Gravando', paused: 'Pausado', starting: 'Aguardando permissão...', download: 'Baixar', discard: 'Descartar', player: 'Reproduzir gravação', denied: 'Permissão negada. Libere o acesso no navegador e tente de novo.', noDevice: 'Nenhum dispositivo encontrado (microfone, câmera ou tela).', unsupported: 'Este navegador não grava mídia.', insecure: 'A gravação exige HTTPS (ou localhost).', empty: 'A gravação ficou vazia.', tooMany: 'Máximo de gravações atingido.' },
       piano: { label: 'Teclado de piano' } } });
     R4.i18n.add('en', { r4: {
       audioeditor: { choose: 'Choose audio', empty: 'No audio loaded. Drop a file or', play: 'Play', pause: 'Stop', stop: 'Stop', trim: 'Keep selection', cut: 'Remove selection', fadeIn: 'Fade in', fadeOut: 'Fade out', normalize: 'Normalize', reverse: 'Reverse', silence: 'Remove silence', undo: 'Undo', redo: 'Redo', gain: 'Gain (dB)', apply: 'Apply gain', format: 'Output format', export: 'Download', area: 'Waveform: drag to select a range; space plays; arrows move the selection', tooBig: 'File too large.', noAudio: 'No audio loaded.' },
       videoeditor: { choose: 'Choose video', empty: 'No video loaded. Drop a file or', from: 'Start', to: 'End', format: 'Output format', size: 'Size', rotate: 'Rotate', speed: 'Speed', filter: 'Filter', mute: 'No audio', flip: 'Mirror', export: 'Export', result: 'Result', resultPlayer: 'Result preview', download: 'Download', cancel: 'Cancel', player: 'Video preview', progress: 'Export progress', original: 'Original', noFilter: 'No filter', gray: 'Black and white', bright: 'Brighter', contrast: 'More contrast', blur: 'Blur', badSrc: 'Use a video file.', tooBig: 'File too large.', noVideo: 'The file has no video.', canceled: 'Export canceled.' },
       converter: { choose: 'Choose files', drop: 'Drop files here or', dropLabel: 'Drop area for files', remove: 'Remove', convert: 'Convert', to: 'Convert to', target: 'Convert to', working: 'Converting...', download: 'Download', noTarget: 'No conversions available for this file in this browser.', tooBig: 'File too large: ', tooMany: 'Maximum of {n} files reached.' },
+      recorder: { record: 'Record', pause: 'Pause', resume: 'Resume', stop: 'Stop', recording: 'Recording', paused: 'Paused', starting: 'Waiting for permission...', download: 'Download', discard: 'Discard', player: 'Play recording', denied: 'Permission denied. Allow access in the browser and try again.', noDevice: 'No device found (microphone, camera or screen).', unsupported: 'This browser cannot record media.', insecure: 'Recording needs HTTPS (or localhost).', empty: 'The recording is empty.', tooMany: 'Recording limit reached.' },
       piano: { label: 'Piano keyboard' } } });
   }
 })(window.R4);

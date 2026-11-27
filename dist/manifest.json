@@ -1,5 +1,5 @@
 {
-    "versao": "2.0.0",
+    "versao": "2.1.0",
     "modulos": [
         "core",
         "support",
@@ -37,19 +37,19 @@
     ],
     "arquivos": {
         "libr4.min.js": {
-            "bytes": 962534,
-            "gzip": 321199,
-            "sha384": "sha384-AITvTywM3EIUFOu9kByYo9x7NT8ML8tCf2vq7VnA6Vfev/viqGScdnOUbca4hyr/"
+            "bytes": 981153,
+            "gzip": 327380,
+            "sha384": "sha384-3bUEAxqsjKno4JuKyFgTlofC+MeNXWn5cLaiR+jBbdQRd1CpYIzb0095MvQ1lXp2"
         },
         "libr4.min.css": {
-            "bytes": 80987,
-            "gzip": 15519,
-            "sha384": "sha384-tzlju5QLHacflXLGOldzGKIc0wD1jUJz+dv+DJ2+pDqm+0cNSIZcHWK/a4Avi37H"
+            "bytes": 82897,
+            "gzip": 15879,
+            "sha384": "sha384-W9gw0m5bD04RljwZlVnBqQtRXGoCVNu3VHqEdFjjISzmMAIjRKijYpIl1zgYo7WI"
         },
         "modules/core.min.js": {
             "bytes": 9736,
             "gzip": 4255,
-            "sha384": "sha384-3JjeEuxhRgZ8PoAbJUnfI8dKMCJIHbV8EvrjxSY+DKP3eNTVo2JDyQW734T+kaEe"
+            "sha384": "sha384-7D0TZCnHb9hsBIRTy82tU17uON/Hunftu/OqJs0lDkzI5xYVbZxJyH3q8hXPfW0C"
         },
         "modules/support.min.js": {
             "bytes": 7926,
@@ -72,9 +72,9 @@
             "sha384": "sha384-nEA01fT1O1wgIbldh+CujEbjjGjdSclGfbCpTv9py934/B7iK3/1QgFn943960p0"
         },
         "modules/declarative.min.js": {
-            "bytes": 15039,
-            "gzip": 6028,
-            "sha384": "sha384-5GNBZlGb3SIfn3qFshWsObDMObYg938c4QwB+5U2+LclDr7X04r0CsMyfxdmgoo+"
+            "bytes": 19122,
+            "gzip": 7628,
+            "sha384": "sha384-aCFAW3tidsALcMSmshs+CblC4vpZsbUKoXGnoTY+EAcO1943q6JT2uMhbe30aIP2"
         },
         "modules/quick.min.js": {
             "bytes": 3365,
@@ -107,9 +107,9 @@
             "sha384": "sha384-Rw185enQlL7HgI6iHHzKHsbcpDaJYTRSFP8VfRyrtjwQL/HegQtFADrB3qp3LaTu"
         },
         "modules/imageeditor.min.js": {
-            "bytes": 29640,
-            "gzip": 11509,
-            "sha384": "sha384-mBRXy9bKVUmeSUe8Jfi2DuCEm0XCHZnm1g+NzdwRH+eDYzMAsLQRGgHtDFq9q7bw"
+            "bytes": 30106,
+            "gzip": 11688,
+            "sha384": "sha384-Tyg1T/3UC+W/xbi7BeVS5HP9EPfltAf5HWR30n+jDresFZt1lJmwlRoSjVSmxwVC"
         },
         "modules/ui.min.js": {
             "bytes": 72304,
@@ -157,9 +157,9 @@
             "sha384": "sha384-K3gFFOVFyomVcyW43RVWeOd/iC2VZY8SyvFKX2Id9vlWQBnTebvk56aq+40xkvkt"
         },
         "modules/audio.min.js": {
-            "bytes": 17714,
-            "gzip": 6726,
-            "sha384": "sha384-NzQV7h0reFRn85+L3ttGc/qOTXlTNqPd1LAXJiUOSfeMyB0fnWDjLdJ14MXWVSFd"
+            "bytes": 17872,
+            "gzip": 6783,
+            "sha384": "sha384-74KygRZAQIfiqDsDPwxtqMUlqh3N/SfsSOacHcNIpXoyxqOueg0TYpxzVV7pkoap"
         },
         "modules/dsp.min.js": {
             "bytes": 20154,
@@ -167,9 +167,9 @@
             "sha384": "sha384-eRq3ArrJgnyC+jh0mY8GSGfFqjF4B97CxsUb2JA6K+qwsTaTKQ727zgM4fBSXGYI"
         },
         "modules/video.min.js": {
-            "bytes": 17944,
-            "gzip": 7110,
-            "sha384": "sha384-sG4B8lf43VPQ0YR9/gjHMEkqfxuy3fVk5yePRxbtYsUrio0UCbBeX3sXXDVklbTz"
+            "bytes": 18041,
+            "gzip": 7142,
+            "sha384": "sha384-dVC/oL+6CplbEbtNI472Wj544tEzN7JKy9W+hCLOrPzfnINqmpCzMduvn30Ygxyy"
         },
         "modules/gfx.min.js": {
             "bytes": 16273,
@@ -202,14 +202,14 @@
             "sha384": "sha384-XfgYkbNpkYIWBS9nNnxNTc1G+YBw/aTzJvi/ORdNx1KPQM23o9GGBhkX8pRQqK+9"
         },
         "modules/mediaui.min.js": {
-            "bytes": 37270,
-            "gzip": 11470,
-            "sha384": "sha384-xaL1Y3sXEGJzsT0OiN1v9YgVsDgeU81OmECbf7FNuU9cFjkelz50gYf3xePnT5Xm"
+            "bytes": 50289,
+            "gzip": 15370,
+            "sha384": "sha384-6SX8QK0+INhtWoUygsIRYNet5RdxPGtnQvsFlUnC8h3LLmovQK9bKI/N7Do53cj8"
         },
         "modules/timelineui.min.js": {
-            "bytes": 112686,
-            "gzip": 36488,
-            "sha384": "sha384-HUQ5UG4MIdYO55Eny1jBZoVyE8avgec2rBASLvdixJkgx8m+dROtSv44KfcOg4Nh"
+            "bytes": 113482,
+            "gzip": 36817,
+            "sha384": "sha384-FlGTb8FoEflfgMnv6dVijgaoFwsT+7OHmWiPVNRLNpn6ynNMn0Ajk/OX3rD5ZICo"
         }
     }
 }

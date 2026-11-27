@@ -5,12 +5,13 @@
 @import url('parts/form.css?v=20261125b');
 @import url('parts/files.css?v=20261125b');
 @import url('parts/imageeditor.css?v=20261125b');
-@import url('parts/media.css?v=20261125b');
+@import url('parts/media.css?v=20261127a');
 @import url('parts/timeline.css?v=20261126d');
 @import url('parts/ui.css?v=20261126b');
 @import url('parts/chart.css?v=20261125b');
 @import url('parts/theme.css?v=20261125b');
 @import url('parts/admin.css?v=20261125b');
+@import url('parts/theme-r4site.css?v=20261127a');
 /* ============================================
  * libr4.css — R4 dev
  * Tema padrão dos componentes. Tudo passa por variáveis --r4-*,

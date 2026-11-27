@@ -139,6 +139,57 @@
     return cfg;
   }
 
+  /* ---------- ligação entre tags: r4-on="evento:#alvo.metodo; evento2:acao:arg" ---------- */
+  const ON_DENY = new Set(['__proto__', 'constructor', 'prototype', 'on', 'un', 'fire', 'render', 'build', 'init', 'afterRender', 'toString', 'valueOf']);
+  const ON_DOM = new Set(['click', 'focus', 'blur', 'reset', 'play', 'pause', 'scrollIntoView', 'showModal', 'close']);
+  let pendingOn = [];
+  function parseOn(str) {
+    const out = [];
+    String(str || '').split(';').forEach(part => {
+      part = part.trim(); const i = part.indexOf(':'); if (i < 1) return;
+      const ev = part.slice(0, i).trim(), rest = part.slice(i + 1).trim();
+      let m = /^#([\w-]+)\.([A-Za-z_$][\w$]*)(?:\((.*)\))?$/.exec(rest);
+      if (rest[0] === '#' && m) {
+        let args = null;
+        if (m[3] != null && m[3].trim() !== '') { try { args = JSON.parse('[' + m[3] + ']'); } catch (e) { R4.warn('r4-on: argumentos inválidos em "' + part + '" (use JSON: "texto", 1, true)'); return; } }
+        out.push({ ev, id: m[1], method: m[2], args });
+      } else if (rest[0] !== '#' && rest) {
+        const j = rest.indexOf(':');
+        out.push({ ev, action: (j < 0 ? rest : rest.slice(0, j)).trim(), arg: j < 0 ? '' : rest.slice(j + 1).trim() });
+      } else R4.warn('r4-on: não entendi "' + part + '" (use evento:#alvo.metodo ou evento:acao:arg)');
+    });
+    return out;
+  }
+  function callOn(src, r, evArgs, srcEl) {
+    if (r.action) {
+      const fn = R4.actions[r.action];
+      if (!fn) return R4.warn('r4-on: ação desconhecida "' + r.action + '"');
+      return Promise.resolve().then(() => fn(r.arg, srcEl, evArgs[0])).catch(e => console.error('[R4] r4-on ' + r.action + ':', e));
+    }
+    const t = R4.get(r.id) || (document.getElementById(r.id) && (document.getElementById(r.id)._r4 || document.getElementById(r.id)));
+    const m = r.method;
+    if (!t) { pendingOn.push({ src, r, evArgs, srcEl, t0: Date.now() }); setTimeout(flushOn, 400); return; }
+    const isCmp = t instanceof R4.Component;
+    if (ON_DENY.has(m) || m[0] === '_' || typeof t[m] !== 'function' || (isCmp ? false : !ON_DOM.has(m)) || (!isCmp && m in Object.prototype)) return R4.warn('r4-on: "' + m + '" não é um método público de #' + r.id);
+    let args = r.args || evArgs.slice();
+    if (!r.args && args[0] === src) args.shift();
+    try { const ret = t[m](...args); if (ret && ret.catch) ret.catch(e => console.error('[R4] r4-on #' + r.id + '.' + m + ':', e)); } catch (e) { console.error('[R4] r4-on #' + r.id + '.' + m + ':', e); }
+  }
+  function flushOn() {
+    if (!pendingOn.length) return;
+    const list = pendingOn; pendingOn = [];
+    list.forEach(p => { if (Date.now() - p.t0 < 5000) callOn(p.src, p.r, p.evArgs, p.srcEl); });
+  }
+  /** Liga um componente ou elemento DOM às regras de r4-on. */
+  function wireOn(src, str, el) {
+    el._r4on = true;
+    parseOn(str).forEach(r => {
+      if (src instanceof R4.Component) src.on(r.ev, (...a) => { callOn(src, r, a, el); });
+      else src.addEventListener(r.ev, ev => { callOn(src, r, [ev], el); });
+    });
+  }
+  R4.wireOn = wireOn;
+
   /* ---------- montagem ---------- */
   function mount(host) {
     host.setAttribute('r4-ready', '');
@@ -155,6 +206,7 @@
         if (hostStyle) cmp.el.style.cssText += ';' + hostStyle;
         R4.scan(cmp.el);
       }
+      if (cfg.domAttrs && cfg.domAttrs['r4-on']) wireOn(cmp, cfg.domAttrs['r4-on'], cmp.el || host);
       Object.keys(cfg.domAttrs || {}).forEach(k => host.removeAttribute(k));
     } catch (err) {
       console.error('[R4] erro ao montar <' + host.localName + '>:', err);
@@ -182,6 +234,8 @@
     ensureStyle(tags);
     checkTags(root);
     [...root.querySelectorAll(tags)].forEach(h => { if (h.isConnected && !h.hasAttribute('r4-ready') && !ignored(h)) mount(h); });
+    root.querySelectorAll('[r4-on]').forEach(n => { if (!n._r4on && !ignored(n) && !n.localName.startsWith('r4-')) wireOn(n, n.getAttribute('r4-on'), n); });
+    flushOn();
     observeAnim(root);
   };
 
@@ -211,7 +265,16 @@
       location.href = u;
     },
     anim: (a, el) => R4.animate(el, a),
-    toast: a => R4.toast(a)
+    toast: a => R4.toast(a),
+    // r4-click="download:#id" ou "download:#id:nome.ext": baixa o .blob / getBlob() do alvo (gravador, editores, conversor)
+    download: async a => {
+      const m = /^#?([^:]+)(?::(.+))?$/.exec(a || ''); if (!m) throw new Error('download: informe #id');
+      const t = target(m[1]); let b = t.blob || (typeof t.getBlob === 'function' ? await t.getBlob() : null);
+      if (b && b.blob instanceof Blob) b = b.blob;
+      if (!(b instanceof Blob)) throw new Error('nada para baixar em #' + m[1]);
+      const ext = ((b.type || '').split(';')[0].split('/')[1] || 'bin').replace('x-wav', 'wav').replace('mpeg', 'mp3');
+      R4.files ? R4.files.download(b, m[2] || (t.name || 'arquivo') + '.' + ext, b.type) : (() => { const l = document.createElement('a'); l.href = URL.createObjectURL(b); l.download = m[2] || 'arquivo.' + ext; l.click(); setTimeout(() => URL.revokeObjectURL(l.href), 4000); })();
+    }
   };
   /** Registra ação própria: R4.action('salvar', (arg, el, ev) => {...}) → r4-click="salvar:valor" */
   R4.action = (name, fn) => { R4.actions[name] = fn; };
@@ -296,6 +359,8 @@
       { name: 'alert:texto  |  toast:texto', type: 'ação', desc: 'Diálogo ou aviso rápido.' },
       { name: 'goto:url', type: 'ação', desc: 'Navega. Só aceita URL relativa, #âncora, http(s), mailto e tel: javascript:, data: e vbscript: são bloqueados (aviso no console).' },
       { name: 'valor vindo de dados', type: 'segurança', desc: 'Ao montar r4-click com dado dinâmico use R4.util.escArg(valor): escapa o HTML e tira ";" (que encadearia outra ação). Na coluna actions do grid, {campo} já é tratado.' },
+      { name: 'download:#id  |  download:#id:nome.ext', type: 'ação', desc: 'Baixa o .blob ou o getBlob() do alvo (gravador, editores de áudio/imagem/vídeo, conversor).' },
+      { name: 'r4-on="evento:#alvo.metodo; evento2:#outro.metodo(args)"', type: 'atributo', desc: 'Liga uma tag a outra sem JavaScript. Quando o componente dispara o evento, chama o método público do alvo (R4.get(id)); o primeiro argumento do evento (o próprio componente) é descartado e o resto é repassado. Ex.: <r4-recorder r4-on="done:#ed.load"> manda a gravação ao <r4-audioeditor id="ed">. Também aceita ações: r4-on="done:download:#ed" e eventos DOM em qualquer elemento (click:#piano.allOff). Argumentos fixos em JSON: #p.noteOn("C4"). Alvos que montam depois são esperados por até 5 s. Só métodos públicos (sem _, __proto__, constructor); sem eval.' },
       { name: 'anim:nome', type: 'ação', desc: 'Anima o próprio elemento (shake, pulse, bounce, flash...).' },
       { name: 'r4-confirm="texto"', type: 'atributo', desc: 'Pede confirmação antes de executar.' }
     ]

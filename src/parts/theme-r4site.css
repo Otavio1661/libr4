@@ -1,0 +1,19 @@
+/* libr4 / tema opcional "r4site": escuro, quadrado e denso (visual do r4dev.com.br).
+   Uso: <html data-r4-theme="r4site"> (ou qualquer elemento: vale só para o que está dentro).
+   Só troca variáveis --r4-*; os componentes não mudam. Fonte: Inter (carregue-a no seu site) com fallback do sistema. */
+[data-r4-theme="r4site"], [data-r4-theme="r4site"].r4-dark {
+  --r4-bg: #050912; --r4-panel: #0a1020; --r4-line: rgba(255, 255, 255, .11); --r4-txt: #e8ecf6; --r4-mut: #8d97b3;
+  --r4-acc: #7c5cff; --r4-acc-txt: #fff; --r4-head: #0e1528; --r4-head-txt: #e8ecf6; --r4-hover: #111a33; --r4-sel: #2a2260;
+  --r4-hit: #5c4a0a; --r4-hit-txt: #fff4c9; --r4-ok: #4ade80; --r4-err: #f87171;
+  --r4-radius: 0px; --r4-density: .9;
+  --r4-font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; --r4-mono: "IBM Plex Mono", ui-monospace, Consolas, "Courier New", monospace;
+  color-scheme: dark;
+}
+[data-r4-theme="r4site"] { background: var(--r4-bg); color: var(--r4-txt); }
+[data-r4-theme="r4site"] .r4-btn, [data-r4-theme="r4site"] .r4-input, [data-r4-theme="r4site"] .r4-md-sel, [data-r4-theme="r4site"] .r4-card, [data-r4-theme="r4site"] .r4-md-item,
+[data-r4-theme="r4site"] .r4-md-stage, [data-r4-theme="r4site"] .r4-md-drop, [data-r4-theme="r4site"] .r4-md-meter, [data-r4-theme="r4site"] .r4-md-msg { border-radius: 0; }
+[data-r4-theme="r4site"] .r4-btn { background: var(--r4-panel); color: var(--r4-txt); border: 1px solid var(--r4-line); }
+[data-r4-theme="r4site"] .r4-btn:hover:not(:disabled) { background: var(--r4-hover); border-color: rgba(255, 255, 255, .22); }
+[data-r4-theme="r4site"] .r4-btn-primary { background: var(--r4-acc); border-color: var(--r4-acc); color: var(--r4-acc-txt); }
+[data-r4-theme="r4site"] .r4-btn-primary:hover:not(:disabled) { background: var(--r4-acc); filter: brightness(1.12); }
+[data-r4-theme="r4site"] .r4-md-white { background: #e8ecf6; }

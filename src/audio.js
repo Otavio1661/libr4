@@ -306,14 +306,15 @@
     const t0 = ctx.currentTime;
     return { stop() { try { src.stop(); } catch (e) { /* já parou */ } }, position() { const t = ctx.currentTime - t0; return o.loop ? from + (t % (to - from || 1)) : Math.min(to, from + t); }, ended };
   }
-  /** Grava o microfone. Devolve { stop(): Promise<áudio>, cancel() }. Exige HTTPS e permissão do usuário. */
+  /** Grava o microfone. Devolve { stream, stop(): Promise<áudio>, stopBlob(): Promise<Blob>, pause(), resume(), cancel() }. Exige HTTPS e permissão do usuário. */
   async function record(o) {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') fail('Este navegador não grava áudio.', 'unsupported');
     const stream = await navigator.mediaDevices.getUserMedia({ audio: Object.assign({ echoCancellation: true, noiseSuppression: true }, o && o.constraints) });
     const rec = new MediaRecorder(stream), parts = []; rec.ondataavailable = e => { if (e.data && e.data.size) parts.push(e.data); };
     const stopped = new Promise(r => { rec.onstop = r; }); rec.start(250);
     const release = () => stream.getTracks().forEach(t => t.stop());
-    return { async stop() { if (rec.state !== 'inactive') rec.stop(); await stopped; release(); return decode(new Blob(parts, { type: rec.mimeType })); }, cancel() { if (rec.state !== 'inactive') rec.stop(); release(); }, get state() { return rec.state; } };
+    const raw = async () => { if (rec.state !== 'inactive') rec.stop(); await stopped; release(); return new Blob(parts, { type: rec.mimeType }); };
+    return { stream, async stop() { return decode(await raw()); }, stopBlob: raw, pause() { if (rec.state === 'recording') rec.pause(); }, resume() { if (rec.state === 'paused') rec.resume(); }, cancel() { if (rec.state !== 'inactive') rec.stop(); release(); }, get state() { return rec.state; } };
   }
 
   const api = { trim, cut, concat, mix, gain, fade, normalize, reverse, pan, speed, stretch, pitch, silence, echo, reverb, compress, filter, equalizer, findSilence, removeSilence, peaks, level, decode, encode, encodePackets: webcodecsEncode, formats, play, record, remix, resample, EQ_BANDS };
