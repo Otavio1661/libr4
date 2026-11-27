@@ -37,9 +37,9 @@
     ],
     "arquivos": {
         "libr4.min.js": {
-            "bytes": 981153,
-            "gzip": 327380,
-            "sha384": "sha384-3bUEAxqsjKno4JuKyFgTlofC+MeNXWn5cLaiR+jBbdQRd1CpYIzb0095MvQ1lXp2"
+            "bytes": 981802,
+            "gzip": 327583,
+            "sha384": "sha384-RqLkyX5TAGFtbOpImIPN/TBMaIK4PvEU42G7lk1YYJW+g9xMs+Q8vA9vMd2oilK4"
         },
         "libr4.min.css": {
             "bytes": 82897,
@@ -202,14 +202,14 @@
             "sha384": "sha384-XfgYkbNpkYIWBS9nNnxNTc1G+YBw/aTzJvi/ORdNx1KPQM23o9GGBhkX8pRQqK+9"
         },
         "modules/mediaui.min.js": {
-            "bytes": 50289,
-            "gzip": 15370,
-            "sha384": "sha384-6SX8QK0+INhtWoUygsIRYNet5RdxPGtnQvsFlUnC8h3LLmovQK9bKI/N7Do53cj8"
+            "bytes": 50685,
+            "gzip": 15482,
+            "sha384": "sha384-ngYD2QQfKPsBJez7yTZL2513USlIexmclPNOkCTgkXa/BRvjo4HVbAf8QMWHRBeR"
         },
         "modules/timelineui.min.js": {
-            "bytes": 113482,
-            "gzip": 36817,
-            "sha384": "sha384-FlGTb8FoEflfgMnv6dVijgaoFwsT+7OHmWiPVNRLNpn6ynNMn0Ajk/OX3rD5ZICo"
+            "bytes": 113735,
+            "gzip": 36881,
+            "sha384": "sha384-uC9A12g0XTn1UhEYkt+l1Mqw4eGuPDb0pPdnTkEHQ1RKePFYELTOS99WiDn/p7hK"
         }
     }
 }

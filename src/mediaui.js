@@ -534,6 +534,8 @@
       const k = this._key(m); if (k) k.classList.add('r4-md-on'); this.fire('note', this, R4.music.note(m), true); return this;
     },
     noteOff(n) { const m = Math.round(R4.music.note(n).midi); if (this._inst) this._inst.noteOff(m); const k = this._key(m); if (k) k.classList.remove('r4-md-on'); this.fire('note', this, R4.music.note(m), false); return this; },
+    setWave(w) { this.allOff(); this.wave = String(w); if (this._inst) { this._inst.destroy(); this._inst = null; } return this; },
+    setVolume(v) { this.volume = clamp(+v, 0, 1); if (this._inst) { this.allOff(); this._inst.destroy(); this._inst = null; } return this; },
     allOff() { if (this._inst) this._inst.allOff(); this._down.clear(); this.keys.querySelectorAll('.r4-md-on').forEach(k => k.classList.remove('r4-md-on')); return this; },
     destroy() { const was = this._destroyed; R4.Component.prototype.destroy.call(this); if (was || !this._destroyed) return this; (this._offs || []).splice(0).forEach(f => f()); if (this._inst) { this._inst.destroy(); this._inst = null; } return this; }
   }, {
@@ -543,6 +545,7 @@
       { name: 'octaves / start', type: 'number', default: '2 / 3', desc: 'Quantidade de oitavas (1 a 7) e oitava inicial (0 a 7).' },
       { name: 'wave / volume', type: "'piano'|'organ'|'sine'|'square'|'saw'|'triangle' / 0..1", default: "'piano' / 0.5", desc: 'Timbre e volume.' },
       { name: 'noteOn(nota, vel) / noteOff(nota) / allOff()', type: 'método', desc: 'Tocar por código; nota é "C4" ou número MIDI.' },
+      { name: 'setWave(timbre) / setVolume(0..1)', type: 'método', desc: 'Troca o timbre ou o volume depois de montado. Ex.: r4-on="click:#p.setWave("organ")" em um botão.' },
       { name: 'note', type: 'evento', desc: 'note(cmp, {name, midi, hz}, ligada) a cada nota ligada/desligada.' }
     ],
     events: ['note', 'error']
